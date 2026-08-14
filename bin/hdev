@@ -215,7 +215,7 @@ orchestrator() {
   local how
   case "$1" in
     claude) how="Delegate with the Agent tool. Send independent tasks in a single message so the subagents run in parallel." ;;
-    claude-pi) how="Delegate IMPLEMENTATION by running 'pi -p --model $PI_MODEL \"<the slice>\"' in a shell. pi is installed and authenticated on this VM. Use your own subagents only for research and review — never for writing code. Run independent pi calls as background jobs and wait for them." ;;
+    claude-pi) how="Delegate IMPLEMENTATION by running 'ANTHROPIC_API_KEY=\$PI_ANTHROPIC_KEY pi -p --model $PI_MODEL \"<the slice>\"' in a shell. Pass that variable inline on the pi command exactly as written and never export it — exporting it breaks your own authentication. pi is installed and authenticated on this VM. Use your own subagents only for research and review — never for writing code. Run independent pi calls as background jobs and wait for them." ;;
     codex)  how="Delegate by running 'codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \"<task>\"' in a shell. Start independent tasks as background jobs and wait for them." ;;
     pi)     how="Delegate by running 'pi -p --model $PI_MODEL \"<task>\"' in a shell, one invocation per task. You have no subagent tool, so a subprocess is the delegation. Start independent tasks as background jobs and wait for them." ;;
   esac
@@ -431,14 +431,19 @@ ship_secrets() {
     [ -z "${OPENROUTER_API_KEY:-}" ] || echo "export OPENROUTER_API_KEY=$(printf %q "$OPENROUTER_API_KEY")"
     [ -z "${CEREBRAS_API_KEY:-}" ]   || echo "export CEREBRAS_API_KEY=$(printf %q "$CEREBRAS_API_KEY")"
     # pi driving an Anthropic model can authenticate with the Claude Code
-    # subscription token. This is the exact inverse of the Claude path above,
-    # where ANTHROPIC_API_KEY is stripped so the subscription wins — here pi
-    # needs it AS the key. Only ever for a pi job on an anthropic model.
+    # subscription token. Which variable it goes in depends on who else is
+    # running: for a pure pi job nothing else uses ANTHROPIC_API_KEY, so set
+    # it. For claude-pi the orchestrator IS Claude Code, and ANTHROPIC_API_KEY
+    # overrides its subscription token — setting it there caused a live
+    # "401 API key is invalid". So pass it separately and let the prompt hand
+    # it to the pi subprocess only.
     case "$AGENT_FOR_SECRETS/$PI_MODEL" in
-      pi/anthropic*|claude-pi/anthropic*)
-        if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-          echo "export ANTHROPIC_API_KEY=$(printf %q "$CLAUDE_CODE_OAUTH_TOKEN")"
-        fi ;;
+      pi/anthropic*)
+        [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+          || echo "export ANTHROPIC_API_KEY=$(printf %q "$CLAUDE_CODE_OAUTH_TOKEN")" ;;
+      claude-pi/anthropic*)
+        [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+          || echo "export PI_ANTHROPIC_KEY=$(printf %q "$CLAUDE_CODE_OAUTH_TOKEN")" ;;
     esac
     # Passed through so a job can be pointed at a non-Anthropic endpoint. Unset
     # by default, so this changes nothing until you deliberately set it.

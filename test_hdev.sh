@@ -271,7 +271,13 @@ countcheck "claude-pi prompt is not mangled" 0 "the slice>. " "$ocp"
 # pi on an anthropic model authenticates with the Claude subscription token.
 ss="$(sed -n '/^ship_secrets()/,/^}/p' "$HDEV")"
 check "pi+anthropic uses the subscription" "CLAUDE_CODE_OAUTH_TOKEN" "$ss"
-check "that inversion is scoped to pi"     "pi/anthropic"            "$ss"
+# Setting ANTHROPIC_API_KEY in a claude-pi job overrides the ORCHESTRATOR's
+# subscription token and produced a live "401 API key is invalid".
+check "pure pi gets ANTHROPIC_API_KEY"     "pi/anthropic*)"          "$ss"
+check "claude-pi gets a separate variable" "PI_ANTHROPIC_KEY"        "$ss"
+countcheck "claude-pi never exports ANTHROPIC_API_KEY" 1 "claude-pi/anthropic" "$ss"
+check "prompt passes the key inline"       'ANTHROPIC_API_KEY=\$PI_ANTHROPIC_KEY' "$ocp"
+check "prompt forbids exporting it"        "never export it"         "$ocp"
 psb="$(sed -n '/^cmd_ps()/,/^}$/p' "$HDEV")"
 check "ps has a delegation column"       "DELEG"                   "$psb"
 check "ps skips deleg for dead jobs"     "gone|unreachable"        "$psb"
