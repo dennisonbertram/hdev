@@ -421,6 +421,7 @@ ship_secrets() {
     fi
     [ -z "${OPENAI_API_KEY:-}" ] || echo "export OPENAI_API_KEY=$(printf %q "$OPENAI_API_KEY")"
     [ -z "${OPENROUTER_API_KEY:-}" ] || echo "export OPENROUTER_API_KEY=$(printf %q "$OPENROUTER_API_KEY")"
+    [ -z "${CEREBRAS_API_KEY:-}" ]   || echo "export CEREBRAS_API_KEY=$(printf %q "$CEREBRAS_API_KEY")"
     # Passed through so a job can be pointed at a non-Anthropic endpoint. Unset
     # by default, so this changes nothing until you deliberately set it.
     [ -z "${ANTHROPIC_BASE_URL:-}" ]   || echo "export ANTHROPIC_BASE_URL=$(printf %q "$ANTHROPIC_BASE_URL")"
@@ -508,8 +509,8 @@ cmd_submit() {
   # can exceed the argument limit. Both CLIs read a prompt from stdin.
   if [ "$agent" = pi ] && [ -z "$DRY" ]; then
     [ ! -f "$AUTHFILE" ] || . "$AUTHFILE"
-    [ -f "$PIAUTH" ] || [ -n "${OPENROUTER_API_KEY:-}" ] \
-      || die "agent 'pi' needs a credential: run 'hdev login pi' (preferred), or export OPENROUTER_API_KEY"
+    [ -f "$PIAUTH" ] || [ -n "${OPENROUTER_API_KEY:-}" ] || [ -n "${CEREBRAS_API_KEY:-}" ] \
+      || die "agent 'pi' needs a credential for ${PI_MODEL%%/*}: run 'hdev login pi' (preferred), or export ${PI_MODEL%%/*}_API_KEY" 
   fi
   case "$agent" in
     claude) AGENT_CMD='claude --dangerously-skip-permissions'"${STRICT:+ --disallowed-tools Edit,Write,NotebookEdit}"'

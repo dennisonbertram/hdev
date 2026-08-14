@@ -136,15 +136,34 @@ a Retry-After header when the bucket is empty.
 Done when: the new integration test passes.
 ```
 
-Rules for slices:
+**A slice is only ready when it has all five of these.** This list comes from
+the `fast-efficient` skill, which measured it against a cheap implementer; it
+applies to every remote agent here for the same reason.
 
-- **Each slice is a self-contained brief.** The remote agent has no memory of
-  this conversation. Name the files, state the approach, state what "done"
-  means. A slice that says "as discussed" will fail.
+1. **One runnable acceptance command, and the exact numbers it must print.**
+   Record the baseline first: `233 passed, 3 skipped`. "Make the tests pass" is
+   not an acceptance condition.
+2. **Tests that already exist and already fail.** You write them, here, before
+   submitting. Run them and confirm they fail *for the right reason* — a 404
+   because the route is missing is a correct failure; a connection error is not.
+   Push them, because the VM clones from GitHub.
+3. **A closed list of files** the agent may create or change. Name every one.
+   Everything else is out of bounds and the reviewer checks it.
+4. **The exact contract**: type signatures, field names, check order, status
+   codes, error strings — written out verbatim, not described. A gap in the
+   contract becomes a gap in the code.
+5. **A size that fits the model's output limit.** `cerebras/zai-glm-4.7` has a
+   16.4K maximum output; a slice whose diff exceeds that will not complete.
+   Split it again.
+
+Two more that are specific to running remotely:
+
 - **Slices must not depend on each other.** They run in parallel on separate
-  VMs from the same base commit and produce separate PRs. Work that must be
-  sequential belongs in one slice, or in a later submit after the first merges.
-- **No secrets in the text.** Tokens reach the VM over SSH separately.
+  VMs from the same base commit and produce separate PRs.
+- **No secrets in the text.** Credentials reach the VM over SSH separately.
+
+`~/.claude/skills/fast-efficient/assets/slice-template.md` is a blank packet in
+exactly this shape. Start from it rather than freehand.
 
 ### 3. Check the repo state, then submit
 
@@ -290,8 +309,26 @@ pushes to the same branch, and the PR updates. That is the whole point — it is
 cheaper and better than opening a second job, because it remembers the reasoning
 behind what it wrote.
 
-Review the diff yourself before asking for changes. `gh pr diff <n>`. Do not
-relay the agent's own summary back to the user as if you had checked it.
+**The agent's final message is a claim, not a result.** Verify it yourself —
+this checklist is from `fast-efficient`, where every one of two measured runs
+had exactly one undeclared deviation:
+
+1. `gh pr view <n> --json files` — did it touch only the files on the list?
+2. `gh pr diff <n> -- tests/` — empty? The agent must never edit a test.
+3. Run the acceptance command. Compare against the baseline you recorded.
+4. Run the type checker and linter. Cheap models skip formatting.
+5. Run the wider suite for regressions.
+6. Read the diff. For "copy this verbatim" work, compare line by line.
+7. Re-read the contract clause by clause and confirm each one.
+
+Known failure modes, all from the same source: it **skips formatting**; it
+**deviates from the contract without saying so** (one run re-exported eleven of
+twelve symbols because the twelfth would fail the linter — the call was right,
+the silence was the defect); and it writes **locally-correct but fragile code**.
+The pattern is that it optimises for the check you gave it and does not report
+the trade-offs it made.
+
+Fix small defects with `hdev ask -c`. Send a large one back as a new slice.
 
 ### One hazard, learned the hard way
 
