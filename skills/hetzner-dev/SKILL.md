@@ -262,9 +262,80 @@ HDEV_PI_MODEL=openrouter/qwen/qwen3-coder hdev submit -a pi plan.md
 `pi` needs `OPENROUTER_API_KEY`. `hdev` refuses to submit without it rather
 than booting a VM that cannot work.
 
-## Watching jobs without babysitting them
+## A finished job is still a collaborator
 
-Once jobs are submitted the user should not have to keep asking. Offer a loop:
+**`done` does not mean disposable.** The VM stays up, the agent's session is
+intact, and the work tree is exactly as it left it. Until you reap, you can send
+it back for changes — and it still has all its context, which a fresh job never
+would.
+
+So the lifecycle is not submit → done → reap. It is:
+
+```
+submit → done → review the PR → ask for changes → review again → reap
+```
+
+**Reap last, not first.** Once the VM is gone the agent is gone with it, and a
+follow-up means a new job that has to rediscover everything.
+
+### Sending work back
+
+```bash
+hdev ask <job>  "why did you skip the error path in send()?"   # question, safe
+hdev ask -c <job> "add the missing error path and push again"  # instruction
+```
+
+`-c` continues the real conversation, so the agent acts: it edits, commits and
+pushes to the same branch, and the PR updates. That is the whole point — it is
+cheaper and better than opening a second job, because it remembers the reasoning
+behind what it wrote.
+
+Review the diff yourself before asking for changes. `gh pr diff <n>`. Do not
+relay the agent's own summary back to the user as if you had checked it.
+
+### One hazard, learned the hard way
+
+`-c` injects an instruction into a working agent, and the agent may act on it in
+ways you did not intend. A real job died this way: an operator note prompted the
+agent to investigate what it thought were runaway processes, and it ran
+`kill -TERM` on its own pid. The job ended mid-work.
+
+So: **`-c` is for the work, not for the machine.** Ask for code changes. Never
+ask an agent to inspect, clean up, or kill processes. `hdev ask` without `-c`
+and `hdev status` cannot change anything and are always safe.
+
+## Watching jobs and closing them out
+
+Offer the user a loop that runs the whole cycle, not just a status poll:
+
+```
+/loop 10m check my hdev jobs, review anything new, and close out what is done
+```
+
+**Each tick:**
+
+1. `hdev ps` — status, VM age, and **idle**: how long since anyone last spoke to
+   that agent.
+2. **Still running?** Nothing to do. Say nothing if nothing changed.
+3. **Newly `done`?** Read the PR diff. Say what landed and what is missing. If
+   the user wants changes, `hdev ask -c` and keep the job alive.
+4. **`failed`?** `hdev logs <job>`. The VM stays up so the evidence survives.
+5. **Done, reviewed, no changes pending, and idle for a while?** Only then
+   `hdev reap`. Tell the user which VMs you are deleting and that their agents
+   go with them.
+
+**What "idle enough" means.** Idle counts from the last interaction, so asking a
+question resets it. Do not reap a job the user is still talking to. Twenty
+minutes idle with the PR reviewed and nothing outstanding is a reasonable bar;
+when in doubt ask, because reaping is irreversible and keeping a VM costs about
+four cents an hour.
+
+**Stop the loop** once every job is reaped. A loop ticking over an empty job
+list is pure noise.
+
+## Interval guidance
+
+Once jobs are submitted the user should not have to keep asking. For reference:
 
 ```
 /loop 10m check my hdev jobs and tell me what changed

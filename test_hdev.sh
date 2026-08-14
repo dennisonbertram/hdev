@@ -86,8 +86,14 @@ check "agent is told it has sudo"       "passwordless sudo" "$(orchestrator clau
 # it believed were runaway processes. Every harness needs the warning.
 eval "$(sed -n '/^PI_MODEL=/p' "$HDEV")"
 for a in claude codex pi; do
-  check "$a is warned not to kill processes" "Do not kill processes you did not start" "$(orchestrator $a)"
+  op="$(orchestrator $a)"
+  check "$a is warned not to kill processes" "Do not kill processes you did not start" "$op"
+  # The prompt is prose and prose has backticks. An unquoted heredoc executes
+  # them: `kill` once vanished from this very warning and ran locally.
+  check "$a prompt keeps its backticks"      '`kill`, `pkill` or `killall`'            "$op"
+  countcheck "$a prompt has no stray placeholders" 0 "@[A-Z]*@"                        "$op"
 done
+check "prompt heredoc is quoted" "cat <<'MD'" "$(sed -n '/^orchestrator()/,/^}$/p' "$HDEV")"
 
 # Resuming without re-passing --agents silently drops the custom subagent roles.
 askblock="$(sed -n '/^cmd_ask()/,/^}/p' "$HDEV")"
@@ -193,6 +199,16 @@ check "skill builds a profile first run" "First run in a project"  "$sk"
 check "skill reads CI for dependencies"  "CI workflow"             "$sk"
 check "skill warns base has no browser"  "no browser"              "$sk"
 check "skill flags the pi usage gap"     "does not cover \`pi\` jobs" "$sk"
+# A finished job is still usable: reaping is the last step, not the first.
+check "skill keeps finished jobs alive"  "still a collaborator"     "$sk"
+check "skill reaps last, not first"      "Reap last, not first"     "$sk"
+check "skill warns -c can be acted on"   "for the work, not for the machine" "$sk"
+check "skill defines idle enough"        "idle enough"              "$sk"
+# ps must expose idle so a loop can judge when a job is safe to close out.
+psblk="$(sed -n '/^cmd_ps()/,/^}$/p' "$HDEV")"
+check "ps has an idle column"            "IDLE"                     "$psblk"
+check "idle is only asked for settled jobs" "running|starting|gone|unreachable" "$psblk"
+check "idle survives a failed probe"     "|| true"                  "$psblk"
 
 # The pi harness: a third agent on a model-agnostic backend.
 out="$("$HDEV" submit -a pi -m "test" 2>&1)"

@@ -24,6 +24,8 @@ PIAUTH="$STATE/pi-auth.json"
 MODEFILE="${HDEV_MODE_FILE:-$STATE/mode}"
 # Skills copied from ~/.claude/skills into the job's own skill directory.
 SKILLS="${HDEV_SKILLS:-efficient-fable}"
+# Set by job_status: seconds a finished job has been idle, or empty.
+JOB_IDLE=""
 # Jobs run as a normal user: Claude Code refuses --dangerously-skip-permissions
 # as root, and a root-owned checkout is a bad default anyway.
 # A VM nobody deletes bills forever. ps warns past this age; `reap --max-age`
@@ -201,18 +203,20 @@ orchestrator() {
   case "$1" in
     claude) how="Delegate with the Agent tool. Send independent tasks in a single message so the subagents run in parallel." ;;
     codex)  how="Delegate by running 'codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \"<task>\"' in a shell. Start independent tasks as background jobs and wait for them." ;;
-    pi)     how="Delegate by running 'pi -p --model '"$PI_MODEL"' \"<task>\"' in a shell, one invocation per task. You have no subagent tool, so a subprocess is the delegation. Start independent tasks as background jobs and wait for them." ;;
+    pi)     how="Delegate by running 'pi -p --model $PI_MODEL \"<task>\"' in a shell, one invocation per task. You have no subagent tool, so a subprocess is the delegation. Start independent tasks as background jobs and wait for them." ;;
   esac
-  cat <<MD
+  # Quoted heredoc: the prompt is prose, and prose contains backticks. Anything
+  # variable is a @PLACEHOLDER@ substituted afterwards.
+  cat <<'MD' | sed -e "s|@HOW@|$how|" -e "s|@RHOME@|$RHOME|g"
 # How to work this job
 
 You are the orchestrator. You do not write the code yourself.
 
-Before you plan anything, load the \`efficient-fable\` skill and follow it for
+Before you plan anything, load the `efficient-fable` skill and follow it for
 the whole job. It is installed in this environment. It governs how you split
 work, what goes in a handoff packet, and how you vet what comes back.
 
-$how
+@HOW@
 
 Use three roles:
 - implementer — makes the code change for one scoped task
@@ -235,7 +239,7 @@ Rules:
   reading and editing.
 - Finish only after a reviewer pass agrees the diff matches the brief. If the
   reviewer finds a real defect, delegate the fix and review again.
-- Keep $RHOME/job/status.md current: what is done, what is running, what is
+- Keep @RHOME@/job/status.md current: what is done, what is running, what is
   blocked, and any open question with the assumption you chose. Rewrite it
   after every delegation. Someone may read it, or ask you about it, while you
   are still working.
@@ -533,10 +537,19 @@ cmd_submit() {
   [ -n "$DRY" ] || say "laptop is free. check later with: hdev ps"
 }
 
+job_idle() {
+  local ip; ip="$(hcloud server ip "$1" 2>/dev/null || true)"
+  [ -n "$ip" ] || return 0
+  printf 'n=$(find %s/.claude/projects %s/job -type f -printf "%%T@\\n" 2>/dev/null | sort -rn | head -1)\n[ -z "$n" ] || echo $(( $(date +%%s) - ${n%%%%.*} ))\n' \
+    "$RHOME" "$RHOME" | rssh "$ip" -o ConnectTimeout=6 'bash -s' 2>/dev/null
+}
+
 job_status() {
   local ip st res
+  JOB_IDLE=""
   ip="$(hcloud server ip "$1" 2>/dev/null || true)"
   [ -n "$ip" ] || { echo gone; return; }
+  JOB_IDLE=""
   st="$(rssh "$ip" -n -o ConnectTimeout=6 "systemctl is-active $UNIT 2>/dev/null; \
         systemctl show $UNIT -p Result --value 2>/dev/null; \
         test -f $RHOME/job/waiting && echo waiting" 2>/dev/null || true)"
@@ -641,7 +654,7 @@ cmd_ps() {
   [ -s "$JOBS" ] || { echo "no jobs yet"; return; }
   local ages limit old=0
   ages="$(server_ages)"; limit="$(secs "$MAXAGE")"
-  printf '%-38s %-11s %-7s %s\n' JOB STATUS AGE BRANCH
+  printf '%-38s %-11s %-6s %-6s %s\n' JOB STATUS AGE IDLE BRANCH
   # ponytail: one SSH per job, sequential. Fine to a few dozen jobs.
   while IFS=$'\t' read -r job branch _nwo _agent _base _created; do
     local age agestr
@@ -652,7 +665,15 @@ cmd_ps() {
     else
       agestr="-"
     fi
-    printf '%-38s %-11s %-7s %s\n' "$job" "$(job_status "$job")" "$agestr" "$branch"
+    local stat idlestr sec
+    stat="$(job_status "$job")"
+    idlestr="-"
+    case "$stat" in
+      running|starting|gone|unreachable) ;;
+      *) sec="$(job_idle "$job" || true)"
+         [ -z "$sec" ] || idlestr="$(human_age "$sec")" ;;
+    esac
+    printf '%-38s %-11s %-6s %-6s %s\n' "$job" "$stat" "$agestr" "$idlestr" "$branch"
   done < "$JOBS"
   [ "$old" -eq 0 ] || say "$old VM(s) older than $MAXAGE (marked !) — 'hdev reap --max-age $MAXAGE' deletes them"
 }

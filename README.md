@@ -119,6 +119,11 @@ hdev reap              # delete the VMs of finished jobs
 hdev reap --max-age 4h # plus runaways and VMs left by a crashed submit
 ```
 
+`hdev ps` also shows **idle** — how long since anyone last spoke to that agent.
+A finished job's VM stays up with its session intact, so you can send it back
+for changes with `hdev ask -c` and it still remembers why it wrote what it
+wrote. Reap last, once the PR is reviewed and nothing is outstanding.
+
 `hdev ps` marks any VM past `HDEV_MAX_AGE` (default `6h`) with a `!`. Put
 `hdev reap --max-age 6h` in cron as a safety net — see [SETUP.md](SETUP.md).
 
