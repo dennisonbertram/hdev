@@ -1,3 +1,5 @@
+<img src="docs/banner.png" alt="hdev — coding agents on throwaway machines" width="100%">
+
 # hdev
 
 Plan on your laptop. Build on Hetzner. Close the laptop.
