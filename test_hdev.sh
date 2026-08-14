@@ -175,7 +175,8 @@ check "waits on the session limit"        "hit your session limit" "$rn"
 check "refuses to wait out a weekly limit" "Not waiting"           "$rn"
 check "names the Opus limit separately"    "Opus usage limit"      "$rn"
 check "never sleeps on an unknown reset"   "not sleeping blind"    "$rn"
-check "resumes rather than restarting"     "--continue"            "$rn"
+check "resume uses the job's own harness"  "RESUME_CMD"            "$rn"
+check "claude resume continues the session" "--continue"           "$(cat "$HDEV")"
 check "reset time comes from a real clock" "ccusage"               "$rn"
 countcheck "only one sleep in the runner" 1 "^ *sleep " "$rn"
 
@@ -241,6 +242,22 @@ check "saving names the provider"         "provider: openrouter" "$(HDEV_STATE_D
 rm -rf "$MD_STATE"
 check "skill makes setup a user decision" "Ask; do not pick silently" "$sk"
 check "skill states the provider trade-off" "OpenRouter has far more" "$sk"
+# A pi-only user must not have to type -a pi on every submit, and plain
+# `hdev login` must not abort just because there is no Claude subscription.
+AG_STATE="$(mktemp -d)"
+check "default agent is claude"        "claude" "$(HDEV_STATE_DIR="$AG_STATE" "$HDEV" agent 2>&1)"
+HDEV_STATE_DIR="$AG_STATE" "$HDEV" agent pi >/dev/null 2>&1
+check "agent choice persists"          "pi"     "$(HDEV_STATE_DIR="$AG_STATE" "$HDEV" agent 2>&1)"
+check "saved agent is used by submit"  "agent=pi" "$(HDEV_STATE_DIR="$AG_STATE" "$HDEV" submit -m t 2>&1)"
+check "bad agent name rejected"        "usage: hdev agent" "$(HDEV_STATE_DIR="$AG_STATE" "$HDEV" agent nope 2>&1)"
+rm -rf "$AG_STATE"
+check "login survives no subscription" "skipping Claude" "$(cat "$HDEV")"
+# Resuming after a usage limit must use the harness the job actually runs.
+for a in claude codex pi; do
+  countcheck "$a has its own resume command" 1 "    $a)  *RESUME_CMD=" "$(cat "$HDEV")"
+done
+check "resume is passed to the job"    "setenv=RESUME_CMD" "$(cat "$HDEV")"
+check "boot waits for the right harness" "WAIT_FOR" "$(cat "$HDEV")"
 psb="$(sed -n '/^cmd_ps()/,/^}$/p' "$HDEV")"
 check "ps has a delegation column"       "DELEG"                   "$psb"
 check "ps skips deleg for dead jobs"     "gone|unreachable"        "$psb"
@@ -284,7 +301,7 @@ check "cold path names the profile"    "no snapshot for profile" "$bootsrc"
 check "cold path says it still works"  "provisioning from scratch" "$bootsrc"
 # Every variable the script reads must be assigned somewhere.
 for v in $(grep -oE '\$\{?[A-Z][A-Z0-9_]{2,}' "$HDEV" | tr -d '${' | sort -u); do
-  case "$v" in HOME|PATH|PWD|BASH_SOURCE|PIPESTATUS|IFS|OLDPWD|SHELL|USER|TERM|LANG|LC_ALL|COPYFILE_DISABLE|GH_TOKEN|OPENAI_API_KEY|OPENROUTER_API_KEY|CEREBRAS_API_KEY|SAVED_PI_MODEL|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_MODEL|CLAUDE_CODE_OAUTH_TOKEN|HCLOUD_TOKEN|HDEV_*|PLAYWRIGHT_BROWSERS_PATH|NODE_PATH|JOB_IDLE|MD|JSON|YAML|BASH|PY) continue ;; esac
+  case "$v" in HOME|PATH|PWD|BASH_SOURCE|PIPESTATUS|IFS|OLDPWD|SHELL|USER|TERM|LANG|LC_ALL|COPYFILE_DISABLE|GH_TOKEN|OPENAI_API_KEY|OPENROUTER_API_KEY|CEREBRAS_API_KEY|SAVED_PI_MODEL|SAVED_AGENT|WAIT_FOR|RESUME_CMD|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_MODEL|CLAUDE_CODE_OAUTH_TOKEN|HCLOUD_TOKEN|HDEV_*|PLAYWRIGHT_BROWSERS_PATH|NODE_PATH|JOB_IDLE|MD|JSON|YAML|BASH|PY) continue ;; esac
   # injected into the remote job by systemd-run --setenv, so they are
   # deliberately not assigned on this side
   case "$v" in BRANCH|TITLE|BASE_REF|AGENT_CMD|NWO|REPO_URL|OUT|LIMIT_RETRIES|PI_PROVIDER) continue ;; esac

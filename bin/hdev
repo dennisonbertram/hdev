@@ -38,6 +38,9 @@ MAXAGE="${HDEV_MAX_AGE:-6h}"
 # The pi harness is model-agnostic. Default to DeepSeek V4 Flash over
 # OpenRouter: $0.14/M in, $0.28/M out at the time of writing.
 PI_MODEL="${HDEV_PI_MODEL:-${SAVED_PI_MODEL:-openrouter/deepseek/deepseek-v4-flash}}"
+# Which harness runs jobs by default. pi-only users should never have to
+# type -a pi on every submit.
+AGENT="${HDEV_AGENT:-${SAVED_AGENT:-claude}}"
 # HDEV_STRICT=1 removes Edit/Write from the orchestrator so delegation is
 # enforced by the harness rather than requested by the prompt.
 STRICT="${HDEV_STRICT:-}"
@@ -182,7 +185,7 @@ while :; do
   note "window should have reset — resuming where the agent left off"
   # Resume the existing conversation rather than restarting: a fresh run would
   # redo work and lose everything the agent already decided.
-  AGENT_CMD='claude --dangerously-skip-permissions --continue -p <<<"The usage limit has reset. Continue exactly where you stopped."'
+  AGENT_CMD="$RESUME_CMD"
 done
 echo "hdev: agent exited $rc"
 
@@ -396,7 +399,7 @@ boot() {
   IP="$(hcloud server ip "$name")"
   for _ in $(seq 1 60); do
     rssh "$IP" -o ConnectTimeout=5 \
-      'cloud-init status --wait >/dev/null 2>&1; command -v claude' >/dev/null 2>&1 && return 0
+      "cloud-init status --wait >/dev/null 2>&1; command -v ${WAIT_FOR:-claude}" >/dev/null 2>&1 && return 0
     sleep 5
   done
   die "$name never became reachable"
@@ -490,7 +493,7 @@ split_slices() {
 }
 
 cmd_submit() {
-  local agent=claude prefix="" plan="" msg="" slices=""
+  local agent="$AGENT" prefix="" plan="" msg="" slices=""
   local envfiles=()
   while [ $# -gt 0 ]; do case "$1" in
     -a|--agent)  agent="$2"; shift 2 ;;
@@ -534,6 +537,13 @@ cmd_submit() {
     *)      die "agent must be claude, codex or pi" ;;
   esac
   AGENT_CMD="$(echo "$AGENT_CMD" | tr '\n' ' ' | tr -s ' ')"
+  # How to pick the same conversation back up after waiting out a usage limit.
+  # Hardcoding claude here would have resumed a pi job with the wrong harness.
+  case "$agent" in
+    claude) RESUME_CMD='claude --dangerously-skip-permissions --continue -p <<<"The usage limit has reset. Continue exactly where you stopped."' ;;
+    codex)  RESUME_CMD='codex exec resume --last --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "The usage limit has reset. Continue exactly where you stopped."' ;;
+    pi)     RESUME_CMD='pi -p --continue --model '"$PI_MODEL"' "The usage limit has reset. Continue exactly where you stopped."' ;;
+  esac
 
   NWO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
   BASE_REF="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
@@ -606,7 +616,7 @@ cmd_submit() {
       continue
     fi
 
-    boot "$job"
+    WAIT_FOR="$agent" boot "$job"
     prepare_box "$IP"
     ship_secrets "$IP"
     ship_skills "$IP"
@@ -632,6 +642,7 @@ cmd_submit() {
       --setenv=HOME=$RHOME --setenv=USER=$RUSER \
       --setenv=BASE_REF=$(printf %q "$BASE_REF") --setenv=BRANCH=$(printf %q "$branch") \
       --setenv=TITLE=$(printf %q "$title") --setenv=AGENT_CMD=$(printf %q "$AGENT_CMD") \
+      --setenv=RESUME_CMD=$(printf %q "$RESUME_CMD") \
       $RHOME/job/run.sh" >/dev/null
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$job" "$branch" "$NWO" "$agent" "$BASE_REF" \
@@ -913,12 +924,23 @@ cmd_login() {
 
   case "$target" in claude|all)
     say "minting a one-year subscription token — a browser opens on this machine"
-    claude setup-token || die "setup-token failed (needs a Claude subscription)"
-    printf 'paste the token here: ' >&2
-    read -r tok
-    [ -n "$tok" ] || die "no token pasted"
+    if ! claude setup-token; then
+      # `hdev login` with no argument sets up everything available. Someone
+      # running pi only has no Claude subscription, and that must not abort
+      # the rest of setup.
+      say "claude setup-token failed — skipping Claude (needs a subscription)."
+      [ "$target" = all ] || die "cannot set up Claude here"
+      tok=""
+    else
+      printf 'paste the token here: ' >&2
+      read -r tok
+    fi
+    if [ -z "$tok" ]; then
+      [ "$target" = all ] || die "no token pasted"
+    else
     umask 077; printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$tok" > "$AUTHFILE"
-    say "stored in $AUTHFILE — every job now uses your subscription" ;;
+    say "stored in $AUTHFILE — Claude jobs now use your subscription"
+    fi ;;
   esac
 
   case "$target" in pi|all)
@@ -960,7 +982,7 @@ cmd_ask() {
   job="$1"; q="$2"
   ip="$(hcloud server ip "$job")" || die "no such job: $job"
   agent="$(awk -F'\t' -v j="$job" '$1==j{print $4}' "$JOBS" 2>/dev/null | head -1)"
-  agent="${agent:-claude}"
+  agent="${agent:-$AGENT}"
 
   case "$agent" in
     claude)
@@ -1061,6 +1083,26 @@ openrouter/deepseek/deepseek-v4-pro	openrouter	$1.17/$2.34 per M when flash is n
 TSV
 }
 
+cmd_agent() {
+  case "${1:-}" in
+    "") echo "$AGENT"
+        grep -q SAVED_AGENT "$CONFIG" 2>/dev/null || say "(default — 'hdev agent <name>' to save a choice)"
+        return ;;
+    claude|codex|pi) ;;
+    *) die "usage: hdev agent [claude|codex|pi]" ;;
+  esac
+  mkdir -p "$STATE"
+  grep -v '^SAVED_AGENT=' "$CONFIG" 2>/dev/null > "$CONFIG.tmp" || true
+  printf 'SAVED_AGENT=%q\n' "$1" >> "$CONFIG.tmp"
+  mv "$CONFIG.tmp" "$CONFIG"
+  say "default agent set to $1"
+  case "$1" in
+    pi) say "pi runs on $PI_MODEL. It never touches your Claude window."
+        say "It has no subagent tool, and 'hdev ask' refuses while a job runs." ;;
+    claude) say "Claude runs on your subscription, with enforced subagents." ;;
+  esac
+}
+
 cmd_model() {
   case "${1:-}" in
     "")
@@ -1118,6 +1160,7 @@ case "${1:-}" in
   snapshot) shift; cmd_snapshot "$@" ;;
   mode)   shift; cmd_mode "$@" ;;
   model)  shift; cmd_model "$@" ;;
+  agent)  shift; cmd_agent "$@" ;;
   ssh)    shift; cmd_ssh "$@" ;;
   nuke)   shift; cmd_nuke "$@" ;;
   *) cat >&2 <<USAGE
@@ -1139,6 +1182,7 @@ hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
   hdev image [profile]               build/rebuild a profile snapshot
   hdev images                        list the profile snapshots you have
   hdev snapshot <job> <profile>      turn a finished job's VM into a profile
+  hdev agent [claude|codex|pi]       which harness runs jobs by default
   hdev model [--list | <id>]         which model the pi harness uses
   hdev mode [local|hetzner]          where agents implement (default: local)
   hdev nuke                          delete every hdev VM
