@@ -410,35 +410,47 @@ Two things that are already safe: the files travel over SSH after boot, never
 through cloud-init; and `hdev snapshot` scrubs the whole work tree before
 capturing, so a sent `.env` cannot end up baked into a profile image.
 
-## Check that the agent actually delegated
+## Keeping jobs cheap
 
-Loading the skill is not the same as following it. A real job here loaded
-`efficient-fable`, mentioned it 95 times, and then made **zero** delegations —
-36 shell calls and 12 file reads, all in its own context. It cost **6,311,012
-cache-read tokens against 21,529 output tokens**, a 293:1 ratio, because every
-turn re-reads the whole context.
+Two things drive cost, and only one of them is about delegation.
 
-So when a job feels expensive, measure it rather than assuming:
+**1. One job per unit of work.** Cost is turns multiplied by context size, and
+context only grows. A measured job here carried ten issues in one brief, ran
+169 turns, and spent 6,311,012 cache-read tokens for 21,529 output tokens. Ten
+slices would have been ten small contexts running in parallel — cheaper and
+faster. `hdev submit` warns when a single brief looks like several work items.
+Slice by issue unless the pieces genuinely cannot be separated.
+
+**2. The workers are already cheap; leave them that way.** `hdev` defines four
+subagents and sets their models: `implementer`, `tester` and `researcher` run on
+haiku, `reviewer` on sonnet, because judgement is worth paying for and reading
+files is not. Override with `HDEV_WORKER_MODEL` and `HDEV_REVIEWER_MODEL`. Tools
+are scoped per role too — `researcher` is read-only and cannot modify anything.
+
+You do not need to tell the agent to use `efficient-fable` or to delegate; the
+job already ships with the skill and the cheap subagents configured. What you
+control is the size of the brief.
+
+### When a job still feels expensive
+
+Measure before theorising:
 
 ```bash
 hdev ssh <job>
 f=$(ls -t ~/.claude/projects/*/*.jsonl | head -1)
+grep -c '"role":"assistant"' "$f"                       # turns
 grep -o '"name":"[A-Za-z]*"' "$f" | sort | uniq -c | sort -rn | head
 ```
 
-A healthy orchestrator shows several `Agent` calls and few `Read`/`Bash` calls.
-An unhealthy one shows the reverse. If you see dozens of `Bash` and no `Agent`,
-the agent is doing the work itself and burning the window.
-
-**The fix is `HDEV_STRICT=1`**, which removes `Edit`, `Write` and `NotebookEdit`
-from the orchestrator so it physically cannot do the work itself:
+Many turns and no `Agent` calls means the orchestrator did everything itself.
+The lever is a smaller brief first. If that is not enough:
 
 ```bash
 HDEV_STRICT=1 hdev submit -b epic1 plan.md
 ```
 
-Use it for large jobs, for anything issue-heavy, and any time the user says
-usage is draining. The prompt asks for delegation; strict mode enforces it.
+Strict mode removes `Edit`, `Write` and `NotebookEdit` from the orchestrator so
+it cannot write code itself. Reach for it after slicing, not instead of it.
 
 ## Seeing what the jobs cost
 

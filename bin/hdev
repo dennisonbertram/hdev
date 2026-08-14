@@ -38,6 +38,10 @@ PI_MODEL="${HDEV_PI_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
 # HDEV_STRICT=1 removes Edit/Write from the orchestrator so delegation is
 # enforced by the harness rather than requested by the prompt.
 STRICT="${HDEV_STRICT:-}"
+# Cheap workers, capable reviewer. Judgement is worth paying for; reading
+# files and running tests is not.
+WORKER_MODEL="${HDEV_WORKER_MODEL:-haiku}"
+REVIEWER_MODEL="${HDEV_REVIEWER_MODEL:-sonnet}"
 RUSER="${HDEV_USER:-agent}"
 RHOME="/home/$RUSER"
 DRY="${HDEV_DRY_RUN:-}"
@@ -228,26 +232,23 @@ Use three roles:
 
 ## Your context is the expensive thing
 
-Every turn re-reads your whole context. So every file you read yourself is paid
-for again on every later turn, compounding. This is measured, not theoretical: a
-real job on this system burned 6,311,012 cache-read tokens against 21,529 output
-tokens — 293 to 1 — because the orchestrator did the work itself instead of
-delegating. Delegation is not a style preference here. It is the cost model.
+Every turn re-reads your whole context, so cost grows with turns multiplied by
+context size, not with the number of files you touch. A real job here ran 169
+turns against a context that grew to 1 MB and spent 6,311,012 cache-read tokens
+for 21,529 output tokens.
 
-Hard limits, not suggestions:
+What that means in practice:
 
-- **Read at most three files yourself**, and only to decide who to delegate to.
-  After that, every read belongs to a subagent.
-- **Never edit or write a source file yourself.** The only file you write is
-  @RHOME@/job/status.md.
-- **Never run a test suite yourself.** Delegate it and read the report.
-- **Delegate before you investigate.** If you are about to run a fourth shell
-  command to understand something, that is a question for a subagent.
-- You keep the plan, the decisions, the git commands, and the final judgement.
-  Nothing else.
+- **Delegate anything that requires reading a lot of code**, because the reading
+  then happens in a context that is thrown away instead of one you carry for the
+  rest of the job. That is the whole reason to delegate.
+- **Do not delegate a one-line edit or a single test run.** Spinning up a
+  subagent costs more than doing it. The skill's exception for small tasks is
+  real; use your judgement.
+- You keep the plan, the decisions, the git commands and the final judgement.
 
-The skill's exception for tiny tasks covers a one-line change, not a whole
-issue. **If you finish this job having made zero delegations, you did it wrong.**
+If this brief covers several separate pieces of work and you finish having made
+no delegations at all, something went wrong — say so in status.md.
 
 Rules:
 - **You are a process. Do not kill processes you did not start.** You run under
@@ -276,11 +277,36 @@ Rules:
 MD
 }
 
-agents_json() { cat <<'JSON'
+# The orchestrator stays on the session model; the workers run on a cheap one
+# and get only the tools their role needs. This is the half of efficient-fable
+# that context-saving alone does not buy you: delegation has to be cheaper per
+# token, not just smaller per context.
+agents_json() { cat <<JSON
 {
-  "implementer": {"description": "Makes the code change for one scoped task", "prompt": "You implement exactly one scoped task. Read the files you need, make the change, keep the diff minimal, and report which files you touched and why. Do not commit. Do not widen the scope beyond the task you were given."},
-  "tester": {"description": "Runs the test suite and fixes what the change broke", "prompt": "Find and run this project's test suite. Report the exact command you ran, the pass and fail counts, and the failing output. Fix failures caused by the change under review. Never weaken, skip or delete a test to make it pass."},
-  "reviewer": {"description": "Reviews the diff critically against the brief", "prompt": "Review the working-tree diff against the brief you are given. Report only defects that change behaviour: bugs, unhandled cases, security problems, and requirements in the brief that are not met. Give the file and line for each. If the diff is correct and complete, say so plainly."}
+  "implementer": {
+    "description": "Makes the code change for one scoped task",
+    "model": "$WORKER_MODEL",
+    "tools": ["Read", "Grep", "Glob", "Edit", "Write", "Bash"],
+    "prompt": "You implement exactly one scoped task. Read the files you need, make the change, keep the diff minimal, and report which files you touched and why. Do not commit. Do not widen the scope beyond the task you were given."
+  },
+  "tester": {
+    "description": "Runs the test suite and fixes what the change broke",
+    "model": "$WORKER_MODEL",
+    "tools": ["Read", "Grep", "Glob", "Edit", "Bash"],
+    "prompt": "Find and run this project's test suite. Report the exact command you ran, the pass and fail counts, and the failing output. Fix failures caused by the change under review. Never weaken, skip or delete a test to make it pass."
+  },
+  "researcher": {
+    "description": "Reads code and answers a question about it. Read-only.",
+    "model": "$WORKER_MODEL",
+    "tools": ["Read", "Grep", "Glob"],
+    "prompt": "Answer the question you are given by reading the codebase. Cite file paths and line numbers for every claim. Report only what you found, not what you assume. You cannot modify anything."
+  },
+  "reviewer": {
+    "description": "Reviews the diff critically against the brief",
+    "model": "$REVIEWER_MODEL",
+    "tools": ["Read", "Grep", "Glob", "Bash"],
+    "prompt": "Review the working-tree diff against the brief you are given. Report only defects that change behaviour: bugs, unhandled cases, security problems, and requirements in the brief that are not met. Give the file and line for each. If the diff is correct and complete, say so plainly."
+  }
 }
 JSON
 }
@@ -511,6 +537,29 @@ cmd_submit() {
   else
     { [ -n "$plan" ] && cat "$plan" || printf '%s\n' "$msg"; } > "$work/1.md"
     { [ -n "$plan" ] && head -1 "$plan" | sed 's/^#* *//' || printf '%s\n' "$msg"; } > "$work/1.title"
+  fi
+  # One job per unit of work. A brief carrying many issues becomes one enormous
+  # context: a measured job ran 169 turns and spent 6.3M cache-read tokens for
+  # 21.5k output. Slicing gives each unit its own VM, its own context, in
+  # parallel — cheaper and faster. Warn rather than block; the caller may know
+  # the items are genuinely coupled.
+  if [ "$n" -eq 1 ]; then
+    # Count occurrences, not lines: a one-line brief can name ten issues.
+    local refs items units
+    # `set -o pipefail`: grep exits 1 when nothing matches, which fails the
+    # whole pipeline and would abort the submit for any brief without #refs.
+    refs="$(grep -oE '#[0-9]{2,}' "$work/1.md" 2>/dev/null | sort -u | wc -l | tr -d ' ' || true)"
+    refs="${refs:-0}"
+    # grep -c prints 0 AND exits 1 when nothing matches; `|| echo 0` would
+    # append a second zero and break the arithmetic below.
+    items="$(grep -cE '^[[:space:]]*([-*]|[0-9]+[.)])[[:space:]]+' "$work/1.md" 2>/dev/null)" || items=0
+    units=$(( refs > items ? refs : items ))
+    if [ "$units" -ge 4 ]; then
+      say "WARNING: this single job's brief lists about $units work items."
+      say "         One job means one context for all of them. Split it into"
+      say "         '## Slice:' sections so each gets its own VM, or pass -1"
+      say "         deliberately if they really are one unit of work."
+    fi
   fi
   say "$n slice(s) → $n job(s), agent=$agent, profile=$PROFILE, base=$BASE_REF"
 

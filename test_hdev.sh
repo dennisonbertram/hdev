@@ -98,9 +98,9 @@ check "prompt heredoc is quoted" "cat <<'MD'" "$(sed -n '/^orchestrator()/,/^}$/
 # the orchestrator worked in its own context instead of delegating.
 oc="$(orchestrator claude)"
 check "prompt states the cost model"    "context is the expensive thing" "$oc"
-check "prompt gives a read limit"       "at most three files"            "$oc"
-check "prompt forbids self-editing"     "Never edit or write a source file" "$oc"
-check "prompt names zero-delegation as failure" "you did it wrong"       "$oc"
+check "prompt explains turns x context" "turns multiplied by"            "$oc"
+check "prompt keeps the small-task exception" "Do not delegate a one-line edit" "$oc"
+check "submit warns on multi-item briefs" "work items" "$(cat "$HDEV")"
 check "prompt cites the real measurement" "6,311,012"                    "$oc"
 check "strict mode is available"        "HDEV_STRICT"                    "$(cat "$HDEV")"
 check "strict mode removes edit tools"  "disallowed-tools Edit,Write"    "$(cat "$HDEV")"
@@ -252,10 +252,25 @@ then echo "FAIL multi-line process substitution reintroduced (expands once per l
 else echo "ok   no multi-line process substitution"; fi
 
 # The inline subagent definitions must stay valid JSON with all three roles.
-agents="$(sed -n '/^agents_json() { cat <<.JSON./,/^JSON$/p' "$HDEV" | sed '1d;$d')"
-if printf '%s' "$agents" | jq -e '.implementer.prompt and .tester.prompt and .reviewer.prompt' >/dev/null 2>&1
-then echo "ok   agents.json is valid and has 3 roles"
-else echo "FAIL agents.json is not valid JSON with implementer/tester/reviewer"; fail=1; fi
+{ sed -n '/^WORKER_MODEL=/p;/^REVIEWER_MODEL=/p' "$HDEV"
+  awk '/^agents_json\(\) \{ cat <</,/^JSON$/' "$HDEV"; echo '}'; echo 'agents_json'
+} > "$HDEV_STATE_DIR/aj.sh"
+agents="$(bash "$HDEV_STATE_DIR/aj.sh" 2>/dev/null)"
+if printf '%s' "$agents" | jq -e '.implementer.prompt and .tester.prompt and .reviewer.prompt and .researcher.prompt' >/dev/null 2>&1
+then echo "ok   agents.json is valid with all four roles"
+else echo "FAIL agents.json is not valid JSON with the expected roles"; fail=1; fi
+# Delegation has to be cheaper per token, not just smaller per context.
+if printf '%s' "$agents" | jq -e '[.implementer,.tester,.researcher|.model]|all(.=="haiku")' >/dev/null 2>&1
+then echo "ok   workers run on the cheap model"
+else echo "FAIL workers are not on the cheap model"; fail=1; fi
+if printf '%s' "$agents" | jq -e '.reviewer.model=="sonnet"' >/dev/null 2>&1
+then echo "ok   reviewer keeps a capable model"
+else echo "FAIL reviewer model is wrong"; fail=1; fi
+if printf '%s' "$agents" | jq -e '(.researcher.tools|index("Edit"))==null and (.researcher.tools|index("Write"))==null' >/dev/null 2>&1
+then echo "ok   researcher is read-only"
+else echo "FAIL researcher can modify files"; fail=1; fi
+check "worker model is overridable"   "HDEV_WORKER_MODEL"   "$(cat "$HDEV")"
+check "reviewer model is overridable" "HDEV_REVIEWER_MODEL" "$(cat "$HDEV")"
 
 check "mode defaults to local" "local"             "$("$HDEV" mode 2>&1)"
 "$HDEV" mode hetzner >/dev/null 2>&1
