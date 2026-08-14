@@ -99,6 +99,12 @@ cd "$HOME/work"
 git checkout "$BASE_REF"
 git checkout -b "$BRANCH"
 
+# Untracked files the user chose to send, unpacked over the clone.
+if [ -f "$HOME/job/envfiles.tgz" ]; then
+  tar -xzf "$HOME/job/envfiles.tgz" -C "$HOME/work"
+  echo "hdev: restored untracked files: $(tar -tzf "$HOME/job/envfiles.tgz" | tr '\n' ' ')"
+fi
+
 OUT="$HOME/job/agent.out"
 LIMIT_RETRIES="${HDEV_LIMIT_RETRIES:-2}"
 
@@ -389,12 +395,14 @@ split_slices() {
 
 cmd_submit() {
   local agent=claude prefix="" plan="" msg="" slices=""
+  local envfiles=()
   while [ $# -gt 0 ]; do case "$1" in
     -a|--agent)  agent="$2"; shift 2 ;;
     -b|--branch) prefix="$2"; shift 2 ;;
     -t|--type)   TYPE="$2"; shift 2 ;;
     -m|--message) msg="$2"; shift 2 ;;
     -p|--profile) PROFILE="$2"; shift 2 ;;
+    -e|--env)     envfiles+=("$2"); shift 2 ;;
     -1|--no-slice) slices=off; shift ;;
     -*)          die "unknown flag $1" ;;
     *)           plan="$1"; shift ;;
@@ -422,6 +430,10 @@ cmd_submit() {
   NWO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
   BASE_REF="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   [ -z "$DRY" ] || { NWO="${NWO:-dry/repo}"; BASE_REF="${BASE_REF:-main}"; }
+  local ef
+  for ef in ${envfiles[@]+"${envfiles[@]}"}; do
+    [ -f "$ef" ] || die "--env file not found: $ef"
+  done
   [ -n "$NWO" ]      || die "not in a GitHub repo (or gh not authenticated)"
   [ -n "$BASE_REF" ] || die "not in a git repo"
 
@@ -455,6 +467,13 @@ cmd_submit() {
     ship_secrets "$IP"
     ship_skills "$IP"
     rssh "$IP" "umask 077 && cat > $RHOME/job/task.md"   < "$work/$i.md"
+    # Untracked files the clone will not contain — .env and friends. Explicit
+    # only: never inferred, because these usually hold real credentials.
+    if [ ${#envfiles[@]} -gt 0 ]; then
+      tar -czf - -C "$(git rev-parse --show-toplevel)" "${envfiles[@]}" \
+        | rssh "$IP" "umask 077 && cat > $RHOME/job/envfiles.tgz"
+      say "sent to the VM: ${envfiles[*]}"
+    fi
     orchestrator "$agent" | rssh "$IP" "cat > $RHOME/job/orchestrator.md"
     if [ "$agent" = claude ]; then
       agents_json | rssh "$IP" "cat > $RHOME/job/agents.json"
@@ -846,7 +865,8 @@ hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
 
   hdev login                         capture subscription auth (once)
   hdev login <claude|codex> --on <job>   log in on the VM instead
-  hdev submit [-a claude|codex] [-p profile] [-t type] [-b prefix] [-1] <plan.md>
+  hdev submit [-a claude|codex] [-p profile] [-e .env.local] [-t type]
+              [-b prefix] [-1] <plan.md>
   hdev submit -m "<one task>"        skip the plan file
   hdev ps                            status of every job
   hdev usage                         tokens burned, per job and here

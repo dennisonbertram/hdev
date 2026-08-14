@@ -162,6 +162,14 @@ countcheck "reap captures usage before deleting" 2 "usage_row" "$reapblk"
 # with the box. This was found by a cleanup that went around reap.
 check "nuke captures usage too" "usage_row" "$(sed -n '/^cmd_nuke()/,/^}/p' "$HDEV")"
 
+# Untracked files (.env) must be explicit, validated early, and unpacked on the box.
+check "--env rejects a missing file" "--env file not found" "$("$HDEV" submit -e /no/such/.env -m hi 2>&1)"
+check "runner unpacks sent files"    "envfiles.tgz"         "$(cat "$HDEV_STATE_DIR/runner.sh")"
+check "runner says what it restored" "restored untracked files" "$(cat "$HDEV_STATE_DIR/runner.sh")"
+subblk="$(sed -n '/^cmd_submit()/,/^}/p' "$HDEV")"
+check "sending is announced"         "sent to the VM"       "$subblk"
+countcheck "env files are never inferred" 0 'envfiles+=.*\.env' "$subblk"
+
 # Firewall rules must be valid JSON built by a real function, not by a
 # multi-line process substitution (bash expands that once per line).
 eval "$(sed -n '/^fw_rules()/p' "$HDEV")"

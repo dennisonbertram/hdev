@@ -197,6 +197,35 @@ question, not on a schedule.
 nothing. A `/loop` runs only until the session closes; for anything longer the
 user wants `/schedule`.
 
+## Untracked files the VM will not have
+
+`hdev` clones from GitHub, so anything untracked or gitignored — `.env`,
+`.env.local`, local certs, fixture data — **is not on the VM**. A suite that
+needs them will fail there and the agent will report itself blocked.
+
+You can send them explicitly:
+
+```bash
+hdev submit -e .env.local -e .env.test plan.md
+```
+
+Paths are relative to the repo root, the flag repeats, and the files land in
+the work tree after the clone.
+
+**Ask the user before sending anything.** These files usually hold real
+credentials — database passwords, payment keys, production tokens — and the VM
+runs an agent with permissions fully open and a live network. Name the exact
+files you propose to send and why the suite needs them, then wait for a yes.
+Never infer `-e .env` because a test failed.
+
+If the user declines, that is a fine outcome: tell the agent in the brief which
+suites it cannot run, and have it report them as unverified rather than
+guessing or stubbing them out.
+
+Two things that are already safe: the files travel over SSH after boot, never
+through cloud-init; and `hdev snapshot` scrubs the whole work tree before
+capturing, so a sent `.env` cannot end up baked into a profile image.
+
 ## Seeing what the jobs cost
 
 ```bash
