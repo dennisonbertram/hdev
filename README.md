@@ -127,6 +127,20 @@ wrote. Reap last, once the PR is reviewed and nothing is outstanding.
 `hdev ps` marks any VM past `HDEV_MAX_AGE` (default `6h`) with a `!`. Put
 `hdev reap --max-age 6h` in cron as a safety net — see [SETUP.md](SETUP.md).
 
+## Making the orchestrator actually delegate
+
+The remote agent is told to delegate to `implementer`, `tester` and `reviewer`.
+It does not always listen. One measured job loaded the skill, referenced it 95
+times, and still made zero delegations — burning **6,311,012 cache-read tokens
+against 21,529 output tokens** because every turn re-read its own 578 KB context.
+
+```bash
+HDEV_STRICT=1 hdev submit -b epic1 plan.md
+```
+
+Strict mode removes `Edit`, `Write` and `NotebookEdit` from the orchestrator, so
+it cannot write code itself and has to delegate. Worth it on anything large.
+
 ## Choosing the agent
 
 ```bash

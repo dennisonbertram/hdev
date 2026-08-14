@@ -35,6 +35,9 @@ MAXAGE="${HDEV_MAX_AGE:-6h}"
 # The pi harness is model-agnostic. Default to DeepSeek V4 Flash over
 # OpenRouter: $0.14/M in, $0.28/M out at the time of writing.
 PI_MODEL="${HDEV_PI_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
+# HDEV_STRICT=1 removes Edit/Write from the orchestrator so delegation is
+# enforced by the harness rather than requested by the prompt.
+STRICT="${HDEV_STRICT:-}"
 RUSER="${HDEV_USER:-agent}"
 RHOME="/home/$RUSER"
 DRY="${HDEV_DRY_RUN:-}"
@@ -222,6 +225,29 @@ Use three roles:
 - implementer — makes the code change for one scoped task
 - tester — runs the test suite and fixes what the change broke
 - reviewer — reads the diff critically against the brief
+
+## Your context is the expensive thing
+
+Every turn re-reads your whole context. So every file you read yourself is paid
+for again on every later turn, compounding. This is measured, not theoretical: a
+real job on this system burned 6,311,012 cache-read tokens against 21,529 output
+tokens — 293 to 1 — because the orchestrator did the work itself instead of
+delegating. Delegation is not a style preference here. It is the cost model.
+
+Hard limits, not suggestions:
+
+- **Read at most three files yourself**, and only to decide who to delegate to.
+  After that, every read belongs to a subagent.
+- **Never edit or write a source file yourself.** The only file you write is
+  @RHOME@/job/status.md.
+- **Never run a test suite yourself.** Delegate it and read the report.
+- **Delegate before you investigate.** If you are about to run a fourth shell
+  command to understand something, that is a question for a subagent.
+- You keep the plan, the decisions, the git commands, and the final judgement.
+  Nothing else.
+
+The skill's exception for tiny tasks covers a one-line change, not a whole
+issue. **If you finish this job having made zero delegations, you did it wrong.**
 
 Rules:
 - **You are a process. Do not kill processes you did not start.** You run under
@@ -448,7 +474,8 @@ cmd_submit() {
       || die "agent 'pi' needs a credential: run 'hdev login pi' (preferred), or export OPENROUTER_API_KEY"
   fi
   case "$agent" in
-    claude) AGENT_CMD='claude --dangerously-skip-permissions
+    claude) AGENT_CMD='claude --dangerously-skip-permissions'"${STRICT:+ --disallowed-tools Edit,Write,NotebookEdit}"'
+             
               --append-system-prompt "$(cat $HOME/job/orchestrator.md)"
               --agents "$(cat $HOME/job/agents.json)"
               -p < $HOME/job/task.md' ;;

@@ -410,6 +410,36 @@ Two things that are already safe: the files travel over SSH after boot, never
 through cloud-init; and `hdev snapshot` scrubs the whole work tree before
 capturing, so a sent `.env` cannot end up baked into a profile image.
 
+## Check that the agent actually delegated
+
+Loading the skill is not the same as following it. A real job here loaded
+`efficient-fable`, mentioned it 95 times, and then made **zero** delegations —
+36 shell calls and 12 file reads, all in its own context. It cost **6,311,012
+cache-read tokens against 21,529 output tokens**, a 293:1 ratio, because every
+turn re-reads the whole context.
+
+So when a job feels expensive, measure it rather than assuming:
+
+```bash
+hdev ssh <job>
+f=$(ls -t ~/.claude/projects/*/*.jsonl | head -1)
+grep -o '"name":"[A-Za-z]*"' "$f" | sort | uniq -c | sort -rn | head
+```
+
+A healthy orchestrator shows several `Agent` calls and few `Read`/`Bash` calls.
+An unhealthy one shows the reverse. If you see dozens of `Bash` and no `Agent`,
+the agent is doing the work itself and burning the window.
+
+**The fix is `HDEV_STRICT=1`**, which removes `Edit`, `Write` and `NotebookEdit`
+from the orchestrator so it physically cannot do the work itself:
+
+```bash
+HDEV_STRICT=1 hdev submit -b epic1 plan.md
+```
+
+Use it for large jobs, for anything issue-heavy, and any time the user says
+usage is draining. The prompt asks for delegation; strict mode enforces it.
+
 ## Seeing what the jobs cost
 
 ```bash

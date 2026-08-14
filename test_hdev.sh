@@ -94,6 +94,16 @@ for a in claude codex pi; do
   countcheck "$a prompt has no stray placeholders" 0 "@[A-Z]*@"                        "$op"
 done
 check "prompt heredoc is quoted" "cat <<'MD'" "$(sed -n '/^orchestrator()/,/^}$/p' "$HDEV")"
+# Measured: a real job burned 6.3M cache-read tokens for 21.5k output because
+# the orchestrator worked in its own context instead of delegating.
+oc="$(orchestrator claude)"
+check "prompt states the cost model"    "context is the expensive thing" "$oc"
+check "prompt gives a read limit"       "at most three files"            "$oc"
+check "prompt forbids self-editing"     "Never edit or write a source file" "$oc"
+check "prompt names zero-delegation as failure" "you did it wrong"       "$oc"
+check "prompt cites the real measurement" "6,311,012"                    "$oc"
+check "strict mode is available"        "HDEV_STRICT"                    "$(cat "$HDEV")"
+check "strict mode removes edit tools"  "disallowed-tools Edit,Write"    "$(cat "$HDEV")"
 
 # Resuming without re-passing --agents silently drops the custom subagent roles.
 askblock="$(sed -n '/^cmd_ask()/,/^}/p' "$HDEV")"
