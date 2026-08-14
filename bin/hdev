@@ -215,6 +215,7 @@ orchestrator() {
   local how
   case "$1" in
     claude) how="Delegate with the Agent tool. Send independent tasks in a single message so the subagents run in parallel." ;;
+    claude-pi) how="Delegate IMPLEMENTATION by running 'pi -p --model $PI_MODEL \"<the slice>\"' in a shell. pi is installed and authenticated on this VM. Use your own subagents only for research and review — never for writing code. Run independent pi calls as background jobs and wait for them." ;;
     codex)  how="Delegate by running 'codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \"<task>\"' in a shell. Start independent tasks as background jobs and wait for them." ;;
     pi)     how="Delegate by running 'pi -p --model $PI_MODEL \"<task>\"' in a shell, one invocation per task. You have no subagent tool, so a subprocess is the delegation. Start independent tasks as background jobs and wait for them." ;;
   esac
@@ -409,6 +410,7 @@ boot() {
 # stores user-data and serves it from the metadata service.
 ship_secrets() {
   local ip="$1" ghtoken
+  : "${AGENT_FOR_SECRETS:=}"
   # Credentials captured by `hdev login` win over whatever is in the shell.
   [ ! -f "$AUTHFILE" ] || . "$AUTHFILE"
   ghtoken="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
@@ -428,6 +430,16 @@ ship_secrets() {
     [ -z "${OPENAI_API_KEY:-}" ] || echo "export OPENAI_API_KEY=$(printf %q "$OPENAI_API_KEY")"
     [ -z "${OPENROUTER_API_KEY:-}" ] || echo "export OPENROUTER_API_KEY=$(printf %q "$OPENROUTER_API_KEY")"
     [ -z "${CEREBRAS_API_KEY:-}" ]   || echo "export CEREBRAS_API_KEY=$(printf %q "$CEREBRAS_API_KEY")"
+    # pi driving an Anthropic model can authenticate with the Claude Code
+    # subscription token. This is the exact inverse of the Claude path above,
+    # where ANTHROPIC_API_KEY is stripped so the subscription wins — here pi
+    # needs it AS the key. Only ever for a pi job on an anthropic model.
+    case "$AGENT_FOR_SECRETS/$PI_MODEL" in
+      pi/anthropic*|claude-pi/anthropic*)
+        if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+          echo "export ANTHROPIC_API_KEY=$(printf %q "$CLAUDE_CODE_OAUTH_TOKEN")"
+        fi ;;
+    esac
     # Passed through so a job can be pointed at a non-Anthropic endpoint. Unset
     # by default, so this changes nothing until you deliberately set it.
     [ -z "${ANTHROPIC_BASE_URL:-}" ]   || echo "export ANTHROPIC_BASE_URL=$(printf %q "$ANTHROPIC_BASE_URL")"
@@ -530,17 +542,23 @@ cmd_submit() {
               codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -' ;;
     # pi has read/bash/edit/write and no subagent tool, so it delegates by
     # invoking itself as a subprocess — same shape as codex.
+    # Claude plans and reviews; pi writes the code. The frontier model does the
+    # judgement, the cheap fast one does the typing.
+    claude-pi) AGENT_CMD='claude --dangerously-skip-permissions
+              --append-system-prompt "$(cat $HOME/job/orchestrator.md)"
+              --agents "$(cat $HOME/job/agents.json)"
+              -p < $HOME/job/task.md' ;;
     pi)     AGENT_CMD='pi -p --model '"$PI_MODEL"'
               --skill $HOME/.claude/skills/efficient-fable
               --append-system-prompt "$(cat $HOME/job/orchestrator.md)"
               < $HOME/job/task.md' ;;
-    *)      die "agent must be claude, codex or pi" ;;
+    *)      die "agent must be claude, claude-pi, codex or pi" ;;
   esac
   AGENT_CMD="$(echo "$AGENT_CMD" | tr '\n' ' ' | tr -s ' ')"
   # How to pick the same conversation back up after waiting out a usage limit.
   # Hardcoding claude here would have resumed a pi job with the wrong harness.
   case "$agent" in
-    claude) RESUME_CMD='claude --dangerously-skip-permissions --continue -p <<<"The usage limit has reset. Continue exactly where you stopped."' ;;
+    claude|claude-pi) RESUME_CMD='claude --dangerously-skip-permissions --continue -p <<<"The usage limit has reset. Continue exactly where you stopped."' ;;
     codex)  RESUME_CMD='codex exec resume --last --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check "The usage limit has reset. Continue exactly where you stopped."' ;;
     pi)     RESUME_CMD='pi -p --continue --model '"$PI_MODEL"' "The usage limit has reset. Continue exactly where you stopped."' ;;
   esac
@@ -618,7 +636,7 @@ cmd_submit() {
 
     WAIT_FOR="$agent" boot "$job"
     prepare_box "$IP"
-    ship_secrets "$IP"
+    AGENT_FOR_SECRETS="$agent" ship_secrets "$IP"
     ship_skills "$IP"
     rssh "$IP" "umask 077 && cat > $RHOME/job/task.md"   < "$work/$i.md"
     # Untracked files the clone will not contain — .env and friends. Explicit
@@ -629,9 +647,9 @@ cmd_submit() {
       say "sent to the VM: ${envfiles[*]}"
     fi
     orchestrator "$agent" | rssh "$IP" "cat > $RHOME/job/orchestrator.md"
-    if [ "$agent" = claude ]; then
-      agents_json | rssh "$IP" "cat > $RHOME/job/agents.json"
-    fi
+    case "$agent" in
+      claude|claude-pi) agents_json | rssh "$IP" "cat > $RHOME/job/agents.json" ;;
+    esac
     runner | rssh "$IP" "cat > $RHOME/job/run.sh && chmod +x $RHOME/job/run.sh"
     rssh "$IP" "chown -R $RUSER:$RUSER $RHOME"
     # --uid, and HOME set explicitly: systemd gives a unit a minimal environment
@@ -1088,8 +1106,8 @@ cmd_agent() {
     "") echo "$AGENT"
         grep -q SAVED_AGENT "$CONFIG" 2>/dev/null || say "(default — 'hdev agent <name>' to save a choice)"
         return ;;
-    claude|codex|pi) ;;
-    *) die "usage: hdev agent [claude|codex|pi]" ;;
+    claude|claude-pi|codex|pi) ;;
+    *) die "usage: hdev agent [claude|claude-pi|codex|pi]" ;;
   esac
   mkdir -p "$STATE"
   grep -v '^SAVED_AGENT=' "$CONFIG" 2>/dev/null > "$CONFIG.tmp" || true
@@ -1168,7 +1186,7 @@ hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
 
   hdev login [claude|codex|pi]       capture agent credentials (once)
   hdev login <claude|codex> --on <job>   log in on the VM instead
-  hdev submit [-a claude|codex|pi] [-p profile] [-e .env.local] [-t type]
+  hdev submit [-a claude|claude-pi|codex|pi] [-p profile] [-e .env.local] [-t type]
               [-b prefix] [-1] <plan.md>
   hdev submit -m "<one task>"        skip the plan file
   hdev ps                            status, age, idle, delegations/cheap%
@@ -1182,7 +1200,8 @@ hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
   hdev image [profile]               build/rebuild a profile snapshot
   hdev images                        list the profile snapshots you have
   hdev snapshot <job> <profile>      turn a finished job's VM into a profile
-  hdev agent [claude|codex|pi]       which harness runs jobs by default
+  hdev agent [claude|claude-pi|codex|pi]  which harness runs jobs
+                                     claude-pi = Claude plans/reviews, pi writes
   hdev model [--list | <id>]         which model the pi harness uses
   hdev mode [local|hetzner]          where agents implement (default: local)
   hdev nuke                          delete every hdev VM
