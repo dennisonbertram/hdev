@@ -1,0 +1,199 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hdev</title>
+<style>
+  :root {
+    --ground: #F2F4F3; --surface: #FFFFFF; --sunk: #E7EBE9;
+    --ink: #16191C; --muted: #5C6866; --rule: #C9D0CE; --rule-soft: #DDE3E1;
+    --ephemeral: #C2482D; --ephemeral-wash: #F7E7E2;
+    --durable: #1F6F6B; --durable-wash: #DDEDEB;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #101413; --surface: #171C1B; --sunk: #1F2725;
+      --ink: #E6EAE9; --muted: #97A5A2; --rule: #33403D; --rule-soft: #262F2D;
+      --ephemeral: #E8815F; --ephemeral-wash: #2F1E19;
+      --durable: #63C8BE; --durable-wash: #122C29;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #101413; --surface: #171C1B; --sunk: #1F2725;
+    --ink: #E6EAE9; --muted: #97A5A2; --rule: #33403D; --rule-soft: #262F2D;
+    --ephemeral: #E8815F; --ephemeral-wash: #2F1E19;
+    --durable: #63C8BE; --durable-wash: #122C29;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: var(--sans); font-size: 16px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 880px; margin: 0 auto;
+    padding: clamp(40px, 8vw, 88px) clamp(20px, 5vw, 40px) 88px;
+    display: flex; flex-direction: column; gap: clamp(36px, 6vw, 56px);
+  }
+  h1 {
+    font-family: var(--mono); font-size: clamp(40px, 9vw, 64px);
+    line-height: 1; letter-spacing: -.03em; margin: 0 0 14px;
+  }
+  .lede { font-size: clamp(17px, 2.4vw, 20px); color: var(--muted); margin: 0; max-width: 54ch; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+  h2 {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--muted); margin: 0 0 16px;
+    padding-bottom: 9px; border-bottom: 1px solid var(--rule-soft);
+  }
+  pre {
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.75;
+    background: var(--sunk); border-radius: 9px; padding: 16px 18px; margin: 0;
+    overflow-x: auto; color: var(--ink);
+  }
+  pre .c { color: var(--muted); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 10px 20px; margin: 0; align-items: baseline; }
+  dt { font-family: var(--mono); font-size: 13px; color: var(--ink); white-space: nowrap; }
+  dd { margin: 0; color: var(--muted); font-size: 15px; }
+  .scroller { overflow-x: auto; }
+  .scroller svg { display: block; min-width: 760px; width: 100%; height: auto; }
+  svg text { font-family: var(--mono); fill: var(--ink); }
+  svg .muted { fill: var(--muted); } svg .eph { fill: var(--ephemeral); } svg .dur { fill: var(--durable); }
+  svg .lbl { font-size: 11px; letter-spacing: 1.4px; }
+  svg .box { fill: var(--surface); stroke: var(--rule); }
+  svg .ghost { fill: var(--surface); stroke: var(--rule-soft); opacity: .6; }
+  svg .zdur { fill: var(--surface); stroke: var(--durable); }
+  svg .zeph { fill: none; stroke: var(--ephemeral); stroke-width: 1.5; stroke-dasharray: 7 5; }
+  svg .sunk { fill: var(--sunk); }
+  svg .weph { fill: var(--ephemeral-wash); stroke: var(--ephemeral); }
+  svg .wdur { fill: var(--durable-wash); }
+  svg .flow { stroke: var(--muted); stroke-width: 1.4; fill: none; }
+  svg .head { fill: var(--muted); }
+  .note { color: var(--muted); font-size: 14.5px; margin: 14px 0 0; }
+  a { color: var(--durable); }
+  a:focus-visible { outline: 2px solid var(--ephemeral); outline-offset: 3px; border-radius: 3px; }
+  footer { color: var(--muted); font-family: var(--mono); font-size: 12px;
+           border-top: 1px solid var(--rule-soft); padding-top: 18px; }
+</style>
+
+<div class="page">
+
+  <header>
+    <h1>hdev</h1>
+    <p class="lede">
+      Hand a coding task to an agent on a <strong>throwaway Hetzner VM</strong>.
+      Close your laptop. It comes back as a pull request.
+    </p>
+  </header>
+
+  <section>
+    <h2>Get started</h2>
+    <pre><span class="c"># 1. install the skill into your agent</span>
+npx skills add dennisonbertram/hdev
+
+<span class="c"># 2. point it at your Hetzner account</span>
+hcloud context create hdev
+
+<span class="c"># 3. put your Claude subscription on the box, once</span>
+hdev login
+
+<span class="c"># 4. build the base image, once (~2 min)</span>
+hdev image
+
+<span class="c"># 5. go</span>
+hdev submit -m "add a --version flag and a test for it"</pre>
+    <p class="note">Full walkthrough, including getting a Hetzner token:
+      <a href="https://github.com/dennisonbertram/hdev/blob/main/SETUP.md">SETUP.md</a></p>
+  </section>
+
+  <section>
+    <h2>How it works</h2>
+    <div class="scroller" role="img" aria-label="Three zones. Your laptop holds the plan and the hdev command. The middle zone is Hetzner, drawn dashed because it is ephemeral: a base snapshot boots one VM per slice, running an orchestrator that delegates to implementer, tester and reviewer subagents. The right zone is GitHub, holding the branch and pull request that outlive the VM.">
+      <svg viewBox="0 0 940 330" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="head" d="M 0 0 L 10 5 L 0 10 z"/>
+          </marker>
+        </defs>
+
+        <rect class="box" x="6" y="44" width="196" height="250" rx="9"/>
+        <text class="muted lbl" x="6" y="34">YOUR LAPTOP</text>
+        <rect class="sunk" x="22" y="62" width="164" height="46" rx="6"/>
+        <text x="34" y="84" font-size="12.5">plan.md</text>
+        <text class="muted" x="34" y="100" font-size="10.5">## Slice: … &#215; N</text>
+        <rect class="weph" x="22" y="122" width="164" height="36" rx="6"/>
+        <text class="eph" x="34" y="145" font-size="12.5">hdev submit</text>
+        <rect class="sunk" x="22" y="182" width="164" height="96" rx="6"/>
+        <text x="34" y="204" font-size="12">hdev ps</text>
+        <text x="34" y="224" font-size="12">hdev status</text>
+        <text x="34" y="244" font-size="12">hdev ask</text>
+        <text class="eph" x="34" y="266" font-size="12">hdev reap</text>
+
+        <rect class="zeph" x="272" y="6" width="392" height="318" rx="11"/>
+        <text class="eph lbl" x="288" y="26">HETZNER &#183; DELETED WHEN YOU REAP</text>
+        <rect class="sunk" x="288" y="38" width="360" height="30" rx="6"/>
+        <text class="dur" x="300" y="58" font-size="11.5">snapshot &#183; node, gh, claude &#183; ready in 39 s</text>
+        <line class="flow" x1="468" y1="68" x2="468" y2="86" marker-end="url(#a)"/>
+
+        <rect class="ghost" x="308" y="102" width="344" height="204" rx="9"/>
+        <rect class="box" x="296" y="92" width="344" height="204" rx="9"/>
+        <text class="muted lbl" x="312" y="112">ONE VM PER SLICE</text>
+        <rect class="weph" x="312" y="122" width="312" height="42" rx="5"/>
+        <text class="eph" x="324" y="140" font-size="12">orchestrator &#8212; claude</text>
+        <text class="muted" x="324" y="156" font-size="10.5">delegates, does not type</text>
+        <rect class="sunk" x="312" y="178" width="98" height="36" rx="5"/>
+        <text x="322" y="200" font-size="10.5">implementer</text>
+        <rect class="sunk" x="419" y="178" width="98" height="36" rx="5"/>
+        <text x="429" y="200" font-size="10.5">tester</text>
+        <rect class="sunk" x="526" y="178" width="98" height="36" rx="5"/>
+        <text x="536" y="200" font-size="10.5">reviewer</text>
+        <rect class="sunk" x="312" y="228" width="312" height="28" rx="5"/>
+        <text x="324" y="247" font-size="11">clone &#183; branch &#183; commit</text>
+        <rect class="sunk" x="312" y="264" width="312" height="28" rx="5"/>
+        <text x="324" y="283" font-size="11">status.md &#8212; rewritten each step</text>
+
+        <rect class="zdur" x="734" y="44" width="200" height="188" rx="9"/>
+        <text class="dur lbl" x="734" y="34">GITHUB</text>
+        <rect class="wdur" x="750" y="80" width="168" height="42" rx="6"/>
+        <text class="dur" x="762" y="100" font-size="12">branch</text>
+        <text class="muted" x="762" y="115" font-size="10">agent/&lt;slice&gt;</text>
+        <rect class="wdur" x="750" y="138" width="168" height="42" rx="6"/>
+        <text class="dur" x="762" y="158" font-size="12">pull request</text>
+        <text class="muted" x="762" y="173" font-size="10">outlives the VM</text>
+
+        <line class="flow" x1="206" y1="140" x2="266" y2="140" marker-end="url(#a)"/>
+        <text class="muted" x="236" y="131" font-size="10" text-anchor="middle">SSH</text>
+        <line class="flow" x1="266" y1="238" x2="206" y2="238" marker-end="url(#a)"/>
+        <text class="muted" x="236" y="229" font-size="10" text-anchor="middle">SSH</text>
+        <line class="flow" x1="668" y1="140" x2="730" y2="140" marker-end="url(#a)"/>
+        <text class="dur" x="699" y="131" font-size="10" text-anchor="middle">push</text>
+      </svg>
+    </div>
+  </section>
+
+  <section>
+    <h2>What you can do</h2>
+    <dl>
+      <dt>hdev submit plan.md</dt>
+      <dd>One VM per <code>## Slice:</code> heading. Slices run in parallel and each opens its own PR.</dd>
+      <dt>hdev ps</dt>
+      <dd>Every job, its status, and how long its VM has been alive.</dd>
+      <dt>hdev status &lt;job&gt;</dt>
+      <dd>The agent's own progress notes. No model call, so it costs nothing.</dd>
+      <dt>hdev ask &lt;job&gt;</dt>
+      <dd>Question the running agent. It answers with its full context; its own thread is untouched.</dd>
+      <dt>hdev image browser</dt>
+      <dd>Profile snapshots — headless Chromium, or Docker — so the toolchain is installed once, not per job.</dd>
+      <dt>hdev reap</dt>
+      <dd>Delete finished VMs. <code>--max-age 4h</code> also clears runaways and anything a crashed submit left behind.</dd>
+    </dl>
+    <p class="note">
+      A job costs about <strong>$0.02</strong> of Hetzner time. Your Claude subscription covers the rest.
+      <a href="architecture.html">How it works in detail →</a>
+    </p>
+  </section>
+
+  <footer>
+    MIT · <a href="https://github.com/dennisonbertram/hdev">github.com/dennisonbertram/hdev</a>
+  </footer>
+</div>

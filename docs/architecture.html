@@ -1,0 +1,387 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hdev</title>
+<style>
+  /* ── tokens: :root is the complete light set; the two dark blocks
+       redefine tokens only, never components ── */
+  :root {
+    --ground:    #F2F4F3;
+    --surface:   #FFFFFF;
+    --sunk:      #E7EBE9;
+    --ink:       #16191C;
+    --muted:     #5C6866;
+    --rule:      #C9D0CE;
+    --rule-soft: #DDE3E1;
+    --ephemeral: #C2482D;
+    --ephemeral-wash: #F7E7E2;
+    --durable:   #1F6F6B;
+    --durable-wash:   #DDEDEB;
+    --shadow: 0 1px 2px rgba(22,25,28,.06), 0 8px 24px -12px rgba(22,25,28,.18);
+
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:    #101413;
+      --surface:   #171C1B;
+      --sunk:      #1F2725;
+      --ink:       #E6EAE9;
+      --muted:     #97A5A2;
+      --rule:      #33403D;
+      --rule-soft: #262F2D;
+      --ephemeral: #E8815F;
+      --ephemeral-wash: #2F1E19;
+      --durable:   #63C8BE;
+      --durable-wash:   #122C29;
+      --shadow: 0 1px 2px rgba(0,0,0,.45), 0 8px 24px -12px rgba(0,0,0,.65);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:    #101413;
+    --surface:   #171C1B;
+    --sunk:      #1F2725;
+    --ink:       #E6EAE9;
+    --muted:     #97A5A2;
+    --rule:      #33403D;
+    --rule-soft: #262F2D;
+    --ephemeral: #E8815F;
+    --ephemeral-wash: #2F1E19;
+    --durable:   #63C8BE;
+    --durable-wash:   #122C29;
+    --shadow: 0 1px 2px rgba(0,0,0,.45), 0 8px 24px -12px rgba(0,0,0,.65);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: clamp(32px, 6vw, 72px) clamp(20px, 5vw, 48px) 96px;
+    display: flex;
+    flex-direction: column;
+    gap: clamp(40px, 6vw, 68px);
+  }
+
+  .masthead { display: flex; flex-direction: column; gap: 14px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  }
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(38px, 7vw, 62px);
+    line-height: 1; letter-spacing: -.03em; margin: 0; text-wrap: balance;
+  }
+  .standfirst {
+    max-width: 62ch; font-size: clamp(17px, 2.2vw, 19px);
+    color: var(--muted); margin: 0; text-wrap: pretty;
+  }
+  .standfirst strong { color: var(--ink); font-weight: 600; }
+
+  h2 {
+    font-family: var(--mono); font-size: 13px;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+    margin: 0 0 20px; padding-bottom: 10px; border-bottom: 1px solid var(--rule-soft);
+  }
+
+  /* ── diagram: styled through classes, because var() does not resolve
+       inside SVG presentation attributes ── */
+  .scroller { overflow-x: auto; padding-bottom: 6px; }
+  .scroller svg { display: block; min-width: 900px; width: 100%; height: auto; }
+  svg text { font-family: var(--mono); fill: var(--ink); }
+  svg .muted { fill: var(--muted); }
+  svg .eph   { fill: var(--ephemeral); }
+  svg .dur   { fill: var(--durable); }
+  svg .lbl   { font-size: 11.5px; letter-spacing: 1.5px; }
+  svg .box       { fill: var(--surface); stroke: var(--rule); }
+  svg .box-ghost { fill: var(--surface); stroke: var(--rule-soft); opacity: .6; }
+  svg .zone-dur  { fill: var(--surface); stroke: var(--durable); }
+  svg .zone-eph  { fill: none; stroke: var(--ephemeral); stroke-width: 1.5; stroke-dasharray: 7 5; }
+  svg .sunk      { fill: var(--sunk); }
+  svg .wash-eph  { fill: var(--ephemeral-wash); stroke: var(--ephemeral); }
+  svg .wash-dur  { fill: var(--durable-wash); stroke: var(--durable); }
+  svg .wash-dur-flat { fill: var(--durable-wash); }
+  svg .flow      { stroke: var(--muted);   stroke-width: 1.4; fill: none; }
+  svg .flow-dur  { stroke: var(--durable); stroke-width: 1.4; fill: none; }
+  svg .head      { fill: var(--muted); }
+  svg .head-dur  { fill: var(--durable); }
+
+  .flows {
+    display: grid; grid-template-columns: max-content 1fr;
+    gap: 7px 18px; margin: 22px 0 0; align-items: baseline;
+  }
+  .flows dt { font-family: var(--mono); font-size: 12px; color: var(--ink); white-space: nowrap; }
+  .flows dd { margin: 0; font-size: 14px; color: var(--muted); }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 22px;
+    padding-top: 18px; border-top: 1px solid var(--rule-soft);
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+  .swatch { width: 22px; height: 3px; border-radius: 2px; flex: none; }
+  .swatch.eph { background: var(--ephemeral); }
+  .swatch.dur { background: var(--durable); }
+  .swatch.dash { height: 0; border-top: 2px dashed var(--ephemeral); border-radius: 0; }
+
+  /* ── lifecycle: numbered because it is a genuine ordered sequence ── */
+  ol.life {
+    list-style: none; margin: 0; padding: 0;
+    display: grid; gap: 1px; background: var(--rule-soft);
+    border: 1px solid var(--rule-soft); border-radius: 10px; overflow: hidden;
+  }
+  ol.life > li {
+    background: var(--surface);
+    display: grid; grid-template-columns: 54px 1fr; gap: 0 16px;
+    padding: 16px 20px; align-items: baseline;
+  }
+  ol.life .n {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    letter-spacing: .08em; font-variant-numeric: tabular-nums;
+  }
+  ol.life .what { font-weight: 600; font-size: 15px; }
+  ol.life .how { color: var(--muted); font-size: 14.5px; margin-top: 3px; }
+  li.gate { background: var(--ephemeral-wash); }
+  li.gate .what, li.gate .n { color: var(--ephemeral); }
+
+  code { font-family: var(--mono); font-size: .88em; background: var(--sunk); padding: .12em .38em; border-radius: 4px; }
+  li.gate code { background: transparent; padding: 0; }
+
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--rule-soft);
+    border-radius: 10px; padding: 22px 24px 24px; box-shadow: var(--shadow);
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .card h3 { font-family: var(--mono); font-size: 14px; margin: 0; letter-spacing: -.01em; }
+  .card p { margin: 0; font-size: 14.5px; color: var(--muted); }
+  .card p strong { color: var(--ink); font-weight: 600; }
+  pre {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.65;
+    background: var(--sunk); border-radius: 8px; padding: 14px 16px; margin: 0;
+    overflow-x: auto; color: var(--ink);
+  }
+  pre .c { color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  caption { text-align: left; color: var(--muted); font-size: 13.5px; padding-bottom: 12px; }
+  th, td { text-align: left; padding: 11px 14px 11px 0; border-bottom: 1px solid var(--rule-soft); vertical-align: baseline; }
+  th { font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 400; }
+  td.v { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.src { color: var(--muted); font-size: 13.5px; }
+  .tablewrap { overflow-x: auto; }
+
+  .note {
+    border-left: 2px solid var(--ephemeral); padding: 2px 0 2px 18px;
+    color: var(--muted); font-size: 14.5px; max-width: 68ch; margin: 22px 0 0;
+  }
+  .note strong { color: var(--ink); font-weight: 600; }
+
+  footer {
+    color: var(--muted); font-family: var(--mono); font-size: 12px;
+    border-top: 1px solid var(--rule-soft); padding-top: 20px;
+  }
+  a { color: var(--durable); }
+  a:focus-visible, .scroller:focus-visible { outline: 2px solid var(--ephemeral); outline-offset: 3px; border-radius: 4px; }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">Hetzner · Claude Code · systemd</div>
+    <h1>hdev</h1>
+    <p class="standfirst">
+      Plan on your laptop. Each slice of the plan goes to a coding agent on its own
+      <strong>throwaway Hetzner VM</strong>, started under systemd so it keeps working after
+      you close the lid. It comes back as a branch and a pull request.
+    </p>
+  </header>
+
+  <section>
+    <h2>Topology</h2>
+    <div class="scroller" tabindex="0" role="img"
+         aria-label="Three zones. Left: your laptop, persistent, holding plan.md and the hdev command, plus the later commands ps, status, ask, logs and reap. Middle: Hetzner, drawn with a dashed border because it is ephemeral. A base snapshot boots one virtual machine per slice; each runs a systemd unit as the agent user, where an orchestrator running claude loads the efficient-fable skill and delegates to implementer, tester and reviewer subagents, working in a clone and keeping notes in status.md. Right: GitHub, durable, holding the branch and the pull request. Secrets, skills and the brief travel laptop to VM over SSH; status and answers come back the same way; the VM pushes to GitHub.">
+      <svg viewBox="0 0 1040 420" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="head" d="M 0 0 L 10 5 L 0 10 z"/>
+          </marker>
+          <marker id="arD" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="head-dur" d="M 0 0 L 10 5 L 0 10 z"/>
+          </marker>
+        </defs>
+
+        <!-- ZONE 1 - laptop -->
+        <rect class="box" x="8" y="52" width="228" height="322" rx="9"/>
+        <text class="muted lbl" x="8" y="42">YOUR LAPTOP &#183; PERSISTENT</text>
+
+        <rect class="sunk" x="24" y="72" width="196" height="50" rx="6"/>
+        <text x="38" y="95" font-size="13">plan.md</text>
+        <text class="muted" x="38" y="112" font-size="11">## Slice: &#8230; &#215; N</text>
+
+        <rect class="wash-eph" x="24" y="136" width="196" height="38" rx="6"/>
+        <text class="eph" x="38" y="160" font-size="13">hdev submit</text>
+
+        <text class="muted lbl" x="24" y="208">LATER, FROM ANYWHERE</text>
+        <rect class="sunk" x="24" y="220" width="196" height="134" rx="6"/>
+        <text x="38" y="245" font-size="12.5">hdev ps</text>
+        <text x="38" y="267" font-size="12.5">hdev status</text>
+        <text x="38" y="289" font-size="12.5">hdev ask</text>
+        <text x="38" y="311" font-size="12.5">hdev logs</text>
+        <text class="eph" x="38" y="335" font-size="12.5">hdev reap</text>
+
+        <!-- ZONE 2 - hetzner: dashed, because this is the part that disappears -->
+        <rect class="zone-eph" x="336" y="8" width="396" height="404" rx="11"/>
+        <text class="eph lbl" x="352" y="30">HETZNER &#183; EPHEMERAL &#183; DELETED WHEN YOU REAP</text>
+
+        <rect class="wash-dur" x="350" y="42" width="368" height="32" rx="6"/>
+        <text class="dur" x="362" y="63" font-size="11.5">snapshot hdev-base &#183; 1.30 GB &#183; node, gh, claude</text>
+        <line class="flow" x1="534" y1="74" x2="534" y2="94" marker-end="url(#ar)"/>
+
+        <rect class="box-ghost" x="368" y="110" width="356" height="280" rx="9"/>
+        <rect class="box" x="356" y="100" width="356" height="280" rx="9"/>
+
+        <text class="muted lbl" x="372" y="122">ONE VM PER SLICE &#183; cpx22</text>
+        <text class="muted lbl" x="696" y="122" text-anchor="end">READY IN 39 s</text>
+
+        <rect class="sunk" x="372" y="132" width="324" height="32" rx="5"/>
+        <text x="384" y="153" font-size="11.5">systemd hdev-job &#183; uid=agent &#183; sudo</text>
+
+        <rect class="wash-eph" x="372" y="176" width="324" height="46" rx="5"/>
+        <text class="eph" x="384" y="195" font-size="12.5">orchestrator &#8212; claude -p</text>
+        <text class="muted" x="384" y="212" font-size="10.5">loads skill: efficient-fable</text>
+
+        <line class="flow" x1="534" y1="222" x2="534" y2="244" marker-end="url(#ar)"/>
+        <text class="muted" x="544" y="240" font-size="10.5">delegates</text>
+
+        <rect class="sunk" x="372" y="248" width="100" height="40" rx="5"/>
+        <text x="382" y="266" font-size="11">implementer</text>
+        <text class="muted" x="382" y="281" font-size="9.5">subagent</text>
+
+        <rect class="sunk" x="484" y="248" width="100" height="40" rx="5"/>
+        <text x="494" y="266" font-size="11">tester</text>
+        <text class="muted" x="494" y="281" font-size="9.5">subagent</text>
+
+        <rect class="sunk" x="596" y="248" width="100" height="40" rx="5"/>
+        <text x="606" y="266" font-size="11">reviewer</text>
+        <text class="muted" x="606" y="281" font-size="9.5">subagent</text>
+
+        <rect class="sunk" x="372" y="300" width="324" height="30" rx="5"/>
+        <text x="384" y="320" font-size="11">~/work &#8212; clone &#183; branch &#183; commit</text>
+
+        <rect class="sunk" x="372" y="340" width="324" height="30" rx="5"/>
+        <text x="384" y="360" font-size="11">~/job/status.md &#8212; rewritten each step</text>
+
+        <!-- ZONE 3 - github -->
+        <rect class="zone-dur" x="832" y="52" width="200" height="238" rx="9"/>
+        <text class="dur lbl" x="832" y="42">GITHUB &#183; DURABLE</text>
+
+        <rect class="wash-dur-flat" x="848" y="104" width="168" height="48" rx="6"/>
+        <text class="dur" x="860" y="126" font-size="12.5">branch</text>
+        <text class="muted" x="860" y="142" font-size="10">agent/&lt;date&gt;-&lt;slice&gt;</text>
+
+        <rect class="wash-dur-flat" x="848" y="168" width="168" height="48" rx="6"/>
+        <text class="dur" x="860" y="190" font-size="12.5">pull request</text>
+        <text class="muted" x="860" y="206" font-size="10">body = the slice brief</text>
+
+        <text class="muted" x="848" y="256" font-size="10.5">you review this, not the VM</text>
+
+        <!-- flows: short labels here, spelled out in the caption below -->
+        <line class="flow" x1="240" y1="155" x2="332" y2="155" marker-end="url(#ar)"/>
+        <text class="muted" x="286" y="146" font-size="10" text-anchor="middle">SSH</text>
+
+        <line class="flow" x1="332" y1="292" x2="240" y2="292" marker-end="url(#ar)"/>
+        <text class="muted" x="286" y="283" font-size="10" text-anchor="middle">SSH</text>
+
+        <line class="flow-dur" x1="736" y1="192" x2="828" y2="192" marker-end="url(#arD)"/>
+        <text class="dur" x="782" y="183" font-size="10" text-anchor="middle">HTTPS</text>
+      </svg>
+    </div>
+    <dl class="flows">
+      <dt>→ SSH</dt><dd>the slice brief, your subscription token, and your skills</dd>
+      <dt>← SSH</dt><dd>status notes, log lines, and answers from the running agent</dd>
+      <dt>→ HTTPS</dt><dd>the branch, then the pull request</dd>
+    </dl>
+    <div class="legend">
+      <span><i class="swatch dur"></i> durable — outlives the job</span>
+      <span><i class="swatch eph"></i> ephemeral — gone when you reap</span>
+      <span><i class="swatch dash"></i> the isolation boundary</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>What one job does</h2>
+    <ol class="life">
+      <li><span class="n">01</span><div><div class="what">Split the plan</div><div class="how">Every <code>## Slice:</code> heading becomes its own job. Slices run in parallel from the same base commit, so each one has to stand alone.</div></div></li>
+      <li><span class="n">02</span><div><div class="what">Boot a VM from the snapshot</div><div class="how">The toolchain is already baked in, so the box is ready in 39 seconds instead of roughly 3 minutes.</div></div></li>
+      <li><span class="n">03</span><div><div class="what">Create the job user</div><div class="how">Claude Code refuses <code>--dangerously-skip-permissions</code> as root. The <code>agent</code> user gets passwordless sudo, so nothing is actually blocked.</div></div></li>
+      <li><span class="n">04</span><div><div class="what">Ship credentials over SSH</div><div class="how">Never through cloud-init — Hetzner stores user-data and serves it from the metadata service. On the box the GitHub token lives in a credential helper, so it never appears in a remote URL.</div></div></li>
+      <li><span class="n">05</span><div><div class="what">Ship the skills</div><div class="how"><code>efficient-fable</code> is copied from your own <code>~/.claude/skills</code>. Per job, not baked into the image, so editing a skill here takes effect on the next submit.</div></div></li>
+      <li class="gate"><span class="n">06</span><div><div class="what">Detach under systemd, and return</div><div class="how"><code>systemd-run --unit=hdev-job --uid=agent</code>. This is the moment the laptop stops mattering. Close the lid.</div></div></li>
+      <li><span class="n">07</span><div><div class="what">Orchestrate, don't type</div><div class="how">The agent loads the skill, then delegates to <code>implementer</code>, <code>tester</code> and <code>reviewer</code>, keeping the plan and the commit for itself.</div></div></li>
+      <li><span class="n">08</span><div><div class="what">Push a branch, open a PR</div><div class="how">The slice brief becomes the PR body. If the agent changed nothing, it says so and pushes nothing.</div></div></li>
+      <li class="gate"><span class="n">09</span><div><div class="what">Reap</div><div class="how">Jobs never delete their own VM — that would need a Hetzner write token sitting on a box that runs an agent with open permissions. <code>hdev reap</code> does it from your side instead.</div></div></li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Talking to a job while it runs</h2>
+    <div class="cols">
+      <div class="card">
+        <h3>hdev status — costs nothing</h3>
+        <p>Reads the notes the orchestrator keeps for itself. No model call. This answers “how is it going” most of the time.</p>
+        <pre><span class="c">## Plan</span>
+1. [done]        implementer — strip dashes
+2. [in progress] tester — npm test
+3. [pending]     reviewer — diff vs brief</pre>
+      </div>
+      <div class="card">
+        <h3>hdev ask — the agent itself</h3>
+        <p>Resumes the job's own conversation with <strong>--fork-session</strong>, so the answer comes from the agent that did the work, with its full context, while its own thread stays untouched. Safe to use mid-run.</p>
+        <pre>hdev ask &lt;job&gt; "why skip the cache?"
+<span class="c">→ 4.6 s round trip</span>
+
+hdev ask -c &lt;job&gt; "stop before the PR"
+<span class="c">→ -c continues the real thread</span></pre>
+      </div>
+    </div>
+    <p class="note">
+      <strong>Where this is thinner than it looks.</strong> The fork was verified against an idle
+      session. Behaviour while the worker is mid-write to its own transcript has not been tested.
+      Codex has no fork at all, so <code>hdev ask</code> refuses on a running Codex job.
+    </p>
+  </section>
+
+  <section>
+    <h2>Measured, not estimated</h2>
+    <div class="tablewrap">
+      <table>
+        <caption>Every figure came from a real run on 14 August 2026. Sample size is one unless stated.</caption>
+        <thead>
+          <tr><th scope="col">Quantity</th><th scope="col">Value</th><th scope="col">Where it came from</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>VM boot to agent-ready</td><td class="v">39 s</td><td class="src">timed SSH loop against a snapshot boot</td></tr>
+          <tr><td>Base image build</td><td class="v">2 m 02 s</td><td class="src">one-off <code>hdev image</code></td></tr>
+          <tr><td>Snapshot size</td><td class="v">1.30 GB</td><td class="src"><code>hcloud image list</code></td></tr>
+          <tr><td>VM cost, cpx22 in nbg1</td><td class="v">€0.0368 / h</td><td class="src">Hetzner API, gross</td></tr>
+          <tr><td><code>hdev ask</code> round trip</td><td class="v">4.6 s</td><td class="src">question to answer, finished job</td></tr>
+          <tr><td>Subagent delegations, slice 1</td><td class="v">3</td><td class="src">the box's transcript, not the agent's self-report</td></tr>
+          <tr><td>Slice 1 result</td><td class="v">+2 / −1</td><td class="src">3 pass, 0 fail — re-run on this laptop</td></tr>
+          <tr><td>Slice 2 result</td><td class="v">+31 / −0</td><td class="src">5 truncate tests pass, slug.js untouched</td></tr>
+          <tr><td>Offline checks</td><td class="v">37</td><td class="src"><code>./test_hdev.sh</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>hdev · one slice, one VM, one branch, one PR</footer>
+</div>

@@ -1,0 +1,748 @@
+#!/usr/bin/env bash
+# hdev — hand a plan to an agent running on a Hetzner VM, then close your laptop.
+#
+# Each slice of a plan becomes one job: one VM, one branch, one PR. The job runs
+# under systemd on the VM, so it survives your SSH session ending. Nothing on
+# this machine needs to stay awake.
+set -euo pipefail
+
+TYPE="${HDEV_TYPE:-cpx22}"
+LOCATION="${HDEV_LOCATION:-nbg1}"
+BASE_IMAGE="${HDEV_IMAGE:-ubuntu-24.04}"
+PROFILE="${HDEV_PROFILE:-base}"
+# Profile scripts live next to this script and are appended to the base
+# provisioning. Drop a new <name>.sh in there to invent a profile.
+PROFILES="${HDEV_PROFILES:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/profiles}"
+SSH_KEY="${HDEV_SSH_KEY:-$HOME/.ssh/id_hdev}"
+FIREWALL="${HDEV_FIREWALL:-hdev}"
+STATE="${HDEV_STATE_DIR:-$HOME/.config/hdev}"
+JOBS="$STATE/jobs.tsv"
+AUTHFILE="$STATE/auth.env"
+CODEXAUTH="$STATE/codex-auth.json"
+MODEFILE="${HDEV_MODE_FILE:-$STATE/mode}"
+# Skills copied from ~/.claude/skills into the job's own skill directory.
+SKILLS="${HDEV_SKILLS:-efficient-fable}"
+# Jobs run as a normal user: Claude Code refuses --dangerously-skip-permissions
+# as root, and a root-owned checkout is a bad default anyway.
+# A VM nobody deletes bills forever. ps warns past this age; `reap --max-age`
+# enforces it. Nothing on the VM can delete itself — only a Hetzner token can,
+# and the VM deliberately has none.
+MAXAGE="${HDEV_MAX_AGE:-6h}"
+RUSER="${HDEV_USER:-agent}"
+RHOME="/home/$RUSER"
+DRY="${HDEV_DRY_RUN:-}"
+UNIT=hdev-job
+SSHOPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR)
+
+die() { echo "hdev: $*" >&2; exit 1; }
+say() { echo "── $*" >&2; }
+rssh() { ssh "${SSHOPTS[@]}" -i "$SSH_KEY" "root@$1" "${@:2}"; }
+
+# ── cloud-init: idempotent, so it is a no-op when booting from the snapshot ──
+userdata() {
+  local frag="$PROFILES/$PROFILE.sh"
+  cat <<'YAML'
+#cloud-config
+package_update: true
+packages: [git, curl, jq, ripgrep, build-essential, ca-certificates, unzip]
+write_files:
+  - path: /root/setup.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      command -v node >/dev/null || {
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+        apt-get install -y nodejs
+      }
+      command -v gh >/dev/null || {
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+          -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+        chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+          > /etc/apt/sources.list.d/github-cli.list
+        apt-get update
+        apt-get install -y gh
+      }
+      command -v claude >/dev/null || npm i -g @anthropic-ai/claude-code
+      command -v codex  >/dev/null || npm i -g @openai/codex
+YAML
+  if [ -f "$frag" ]; then
+    printf "  - path: /root/profile.sh\n    permissions: '0755'\n    content: |\n"
+    sed 's/^/      /' "$frag"
+  fi
+  printf 'runcmd:\n  - [bash, /root/setup.sh]\n'
+  if [ -f "$frag" ]; then printf '  - [bash, /root/profile.sh]\n'; fi
+}
+
+# ── the job script that runs on the VM, detached, under systemd ──
+runner() { cat <<'BASH'
+#!/usr/bin/env bash
+# set -e everywhere except around the agent: without it, a failed clone lets
+# every later step run in the wrong directory and the job reports success it
+# never had.
+set -euo pipefail
+# .hdev-env exports what exists and nothing else — re-exporting names here would
+# recreate an empty ANTHROPIC_API_KEY, which overrides the subscription token.
+. "$HOME/.hdev-env"
+# Profiles contribute environment here (browser paths, and so on).
+[ ! -f /etc/hdev.env ] || . /etc/hdev.env
+
+# Token lives in the credential helper, never in a remote URL or in git config.
+git config --global credential.helper '!f(){ echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+git config --global user.name  "hdev agent"
+git config --global user.email "hdev@local"
+
+git clone --filter=blob:none "https://github.com/$NWO.git" "$HOME/work"
+cd "$HOME/work"
+git checkout "$BASE_REF"
+git checkout -b "$BRANCH"
+
+# The agent is the one step allowed to fail without aborting the job.
+set +e
+eval "$AGENT_CMD"
+rc=$?
+set -e
+echo "hdev: agent exited $rc"
+
+git add -A
+git diff --cached --quiet || git commit -q -m "$TITLE"
+
+if git diff --quiet "origin/$BASE_REF" HEAD; then
+  echo "hdev: agent made no changes — nothing pushed"
+  exit "$rc"
+fi
+
+git push -q -u origin "$BRANCH"
+echo "hdev: pushed $BRANCH"
+
+if gh pr create --head "$BRANCH" --base "$BASE_REF" --title "$TITLE" \
+     --body-file "$HOME/job/task.md"; then
+  echo "hdev: PR opened"
+else
+  echo "hdev: branch pushed but PR creation failed — open it by hand"
+fi
+exit "$rc"
+BASH
+}
+
+# ── the remote agent orchestrates; it does not type code itself ──
+orchestrator() {
+  local how
+  case "$1" in
+    claude) how="Delegate with the Agent tool. Send independent tasks in a single message so the subagents run in parallel." ;;
+    codex)  how="Delegate by running 'codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \"<task>\"' in a shell. Start independent tasks as background jobs and wait for them." ;;
+  esac
+  cat <<MD
+# How to work this job
+
+You are the orchestrator. You do not write the code yourself.
+
+Before you plan anything, load the \`efficient-fable\` skill and follow it for
+the whole job. It is installed in this environment. It governs how you split
+work, what goes in a handoff packet, and how you vet what comes back.
+
+$how
+
+Use three roles:
+- implementer — makes the code change for one scoped task
+- tester — runs the test suite and fixes what the change broke
+- reviewer — reads the diff critically against the brief
+
+Rules:
+- This VM holds only this job and is destroyed when you finish. You have
+  passwordless sudo. Install whatever system packages the work needs instead of
+  working around a missing dependency.
+- Break the brief into tasks before you start any of them.
+- You hold the plan, the decisions and the commit. The subagents hold the file
+  reading and editing.
+- Finish only after a reviewer pass agrees the diff matches the brief. If the
+  reviewer finds a real defect, delegate the fix and review again.
+- Keep $RHOME/job/status.md current: what is done, what is running, what is
+  blocked, and any open question with the assumption you chose. Rewrite it
+  after every delegation. Someone may read it, or ask you about it, while you
+  are still working.
+- If the brief is ambiguous, record the ambiguity and your assumption in
+  status.md and keep going. Do not stop and wait for an answer.
+
+# The brief
+MD
+}
+
+agents_json() { cat <<'JSON'
+{
+  "implementer": {"description": "Makes the code change for one scoped task", "prompt": "You implement exactly one scoped task. Read the files you need, make the change, keep the diff minimal, and report which files you touched and why. Do not commit. Do not widen the scope beyond the task you were given."},
+  "tester": {"description": "Runs the test suite and fixes what the change broke", "prompt": "Find and run this project's test suite. Report the exact command you ran, the pass and fail counts, and the failing output. Fix failures caused by the change under review. Never weaken, skip or delete a test to make it pass."},
+  "reviewer": {"description": "Reviews the diff critically against the brief", "prompt": "Review the working-tree diff against the brief you are given. Report only defects that change behaviour: bugs, unhandled cases, security problems, and requirements in the brief that are not met. Give the file and line for each. If the diff is correct and complete, say so plainly."}
+}
+JSON
+}
+
+preflight() {
+  command -v hcloud >/dev/null || die "hcloud CLI not found (brew install hcloud)"
+  [ -n "${HCLOUD_TOKEN:-}" ] || hcloud context active >/dev/null 2>&1 \
+    || die "no Hetzner token: export HCLOUD_TOKEN=... or run 'hcloud context create hdev'"
+  if [ ! -f "$SSH_KEY.pub" ]; then
+    say "no ssh key at $SSH_KEY — generating one"
+    mkdir -p "$(dirname "$SSH_KEY")"
+    ssh-keygen -t ed25519 -N "" -C "hdev" -f "$SSH_KEY" >/dev/null \
+      || die "could not generate an ssh key at $SSH_KEY"
+  fi
+  mkdir -p "$STATE"
+}
+
+ensure_key() {
+  KEYNAME="hdev-$(awk '{print $NF}' "$SSH_KEY.pub" | tr -c 'a-zA-Z0-9' - | cut -c1-24)"
+  hcloud ssh-key describe "$KEYNAME" >/dev/null 2>&1 \
+    || hcloud ssh-key create --name "$KEYNAME" --public-key-from-file "$SSH_KEY.pub" >/dev/null
+}
+
+# Inbound SSH from this machine's current public IP only. Re-applied on submit.
+# ponytail: a roaming laptop must re-run submit or reap from the same network to
+# reach an existing box; widen the rule by hand if that becomes annoying.
+fw_rules() { printf '[{"direction":"in","protocol":"tcp","port":"22","source_ips":["%s/32"]}]\n' "$1"; }
+
+ensure_firewall() {
+  local ip rules
+  ip="$(curl -fsS --max-time 8 https://ipv4.icanhazip.com | tr -d '[:space:]')" \
+    || { say "could not detect public IP — skipping firewall"; FIREWALL=""; return 0; }
+  hcloud firewall describe "$FIREWALL" >/dev/null 2>&1 \
+    || hcloud firewall create --name "$FIREWALL" >/dev/null
+  # A real file, not <(...): a multi-line process substitution wrapping a
+  # heredoc is expanded once per line, and hcloud then sees four extra args.
+  rules="$(mktemp)"
+  fw_rules "$ip" > "$rules"
+  hcloud firewall replace-rules --rules-file "$rules" "$FIREWALL" >/dev/null
+  rm -f "$rules"
+}
+
+# Snapshots have no name in the Hetzner API — only a description — so find ours
+# by label and boot from its numeric ID.
+snapshot_id() {
+  hcloud image list --type snapshot --selector "hdev-profile=${1:-$PROFILE}" \
+    -o noheader -o columns=id 2>/dev/null | head -1
+}
+
+boot() {
+  local name="$1" force_base="${2:-}" img
+  img="$(snapshot_id)"
+  if [ -n "$force_base" ] || [ -z "$img" ]; then
+    img="$BASE_IMAGE"
+    [ -n "$force_base" ] \
+      || say "no '$SNAPSHOT' snapshot — booting $BASE_IMAGE (~3 min; 'hdev image' fixes this)"
+  fi
+  # Hetzner prices server types it will not actually sell you: a whole
+  # generation can be "supported" everywhere and available nowhere. Say which
+  # types this location will really create rather than echoing the API error.
+  hcloud server create --name "$name" --type "$TYPE" --location "$LOCATION" \
+    --image "$img" --ssh-key "$KEYNAME" ${FIREWALL:+--firewall "$FIREWALL"} \
+    --label hdev=1 --user-data-from-file <(userdata) >/dev/null || {
+      say "could not create a $TYPE in $LOCATION. Available there right now:"
+      hcloud datacenter list -o noheader -o columns=name 2>/dev/null \
+        | grep "^$LOCATION" | head -1 \
+        | xargs -I{} hcloud datacenter describe {} 2>/dev/null \
+        | awk '/Available: true/ {print "     " $4}' | tr '\n' ' ' >&2
+      echo >&2
+      die "pick one with -t <type> or set HDEV_TYPE"
+    }
+  IP="$(hcloud server ip "$name")"
+  for _ in $(seq 1 60); do
+    rssh "$IP" -o ConnectTimeout=5 \
+      'cloud-init status --wait >/dev/null 2>&1; command -v claude' >/dev/null 2>&1 && return 0
+    sleep 5
+  done
+  die "$name never became reachable"
+}
+
+# Secrets go over SSH after boot, never through cloud-init user-data — Hetzner
+# stores user-data and serves it from the metadata service.
+ship_secrets() {
+  local ip="$1" ghtoken
+  # Credentials captured by `hdev login` win over whatever is in the shell.
+  [ ! -f "$AUTHFILE" ] || . "$AUTHFILE"
+  ghtoken="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
+  [ -n "$ghtoken" ] || die "no GitHub token (gh auth login, or export GH_TOKEN)"
+  {
+    echo "export GH_TOKEN=$(printf %q "$ghtoken")"
+    echo "export NWO=$(printf %q "$NWO")"
+    # Only non-empty vars are written. ANTHROPIC_API_KEY takes precedence over
+    # the subscription token inside Claude Code, so it is omitted entirely when
+    # a subscription token exists — otherwise the job silently bills the API.
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+      echo "export CLAUDE_CODE_OAUTH_TOKEN=$(printf %q "$CLAUDE_CODE_OAUTH_TOKEN")"
+      echo "unset ANTHROPIC_API_KEY"
+    elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+      echo "export ANTHROPIC_API_KEY=$(printf %q "$ANTHROPIC_API_KEY")"
+    fi
+    [ -z "${OPENAI_API_KEY:-}" ] || echo "export OPENAI_API_KEY=$(printf %q "$OPENAI_API_KEY")"
+    # Passed through so a job can be pointed at a non-Anthropic endpoint. Unset
+    # by default, so this changes nothing until you deliberately set it.
+    [ -z "${ANTHROPIC_BASE_URL:-}" ]   || echo "export ANTHROPIC_BASE_URL=$(printf %q "$ANTHROPIC_BASE_URL")"
+    [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] || echo "export ANTHROPIC_AUTH_TOKEN=$(printf %q "$ANTHROPIC_AUTH_TOKEN")"
+    [ -z "${ANTHROPIC_MODEL:-}" ]      || echo "export ANTHROPIC_MODEL=$(printf %q "$ANTHROPIC_MODEL")"
+  } | rssh "$ip" "umask 077 && mkdir -p $RHOME/job && cat > $RHOME/.hdev-env"
+
+  # Codex subscription auth is a file, not a token.
+  [ ! -f "$CODEXAUTH" ] || rssh "$ip" "umask 077 && mkdir -p $RHOME/.codex && cat > $RHOME/.codex/auth.json" < "$CODEXAUTH"
+}
+
+# Create the unprivileged job user. Done per submit rather than baked into the
+# snapshot, so it works on the plain-Ubuntu path too.
+# Passwordless sudo, because the only thing the non-root user actually loses is
+# the ability to install system packages, and the VM holds one job and is then
+# destroyed. This is not a weaker boundary than root — the boundary is the VM.
+prepare_box() {
+  rssh "$1" "id -u $RUSER >/dev/null 2>&1 || useradd -m -s /bin/bash $RUSER; \
+             mkdir -p $RHOME/job && chown -R $RUSER:$RUSER $RHOME; \
+             echo '$RUSER ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/90-hdev-$RUSER; \
+             chmod 440 /etc/sudoers.d/90-hdev-$RUSER; \
+             visudo -cf /etc/sudoers.d/90-hdev-$RUSER >/dev/null; \
+             ! getent group docker >/dev/null || usermod -aG docker $RUSER"
+}
+
+# Copy named skills from this machine into the job's own skill directory, so
+# the remote agent works the way you work. Shipped per job rather than baked
+# into the snapshot: editing a skill takes effect on the next submit.
+ship_skills() {
+  local ip="$1" s found=()
+  for s in $SKILLS; do
+    [ ! -d "$HOME/.claude/skills/$s" ] || found+=("$s")
+  done
+  [ ${#found[@]} -gt 0 ] || { say "no skills found to ship (wanted: $SKILLS)"; return 0; }
+  tar -C "$HOME/.claude/skills" -czf - "${found[@]}" \
+    | rssh "$ip" "mkdir -p $RHOME/.claude/skills && tar -C $RHOME/.claude/skills -xzf -"
+  say "shipped skills: ${found[*]}"
+}
+
+slugify() { echo "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' - | tr -s - | cut -c1-32 | sed 's/^-//;s/-$//'; }
+
+# A plan is sliced on "## Slice: <title>" headings. No headings means one slice.
+split_slices() {
+  local file="$1" outdir="$2" n=0
+  mkdir -p "$outdir"
+  if ! grep -qE '^##[[:space:]]+Slice:' "$file"; then
+    cp "$file" "$outdir/1.md"; head -1 "$file" | sed 's/^#* *//' > "$outdir/1.title"; echo 1; return
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      "## Slice:"*)
+        n=$((n+1))
+        echo "${line#\#\# Slice:}" | sed 's/^ *//' > "$outdir/$n.title"
+        : > "$outdir/$n.md" ;;
+      *) [ "$n" -gt 0 ] && printf '%s\n' "$line" >> "$outdir/$n.md" ;;
+    esac
+  done < "$file"
+  echo "$n"
+}
+
+cmd_submit() {
+  local agent=claude prefix="" plan="" msg="" slices=""
+  while [ $# -gt 0 ]; do case "$1" in
+    -a|--agent)  agent="$2"; shift 2 ;;
+    -b|--branch) prefix="$2"; shift 2 ;;
+    -t|--type)   TYPE="$2"; shift 2 ;;
+    -m|--message) msg="$2"; shift 2 ;;
+    -p|--profile) PROFILE="$2"; shift 2 ;;
+    -1|--no-slice) slices=off; shift ;;
+    -*)          die "unknown flag $1" ;;
+    *)           plan="$1"; shift ;;
+  esac; done
+  [ -n "$plan" ] || [ -n "$msg" ] \
+    || die "usage: hdev submit [-a claude|codex] [-t type] [-1] (<plan.md> | -m \"<task>\")"
+  [ -z "$plan" ] || [ -f "$plan" ] || die "plan file not found: $plan"
+
+  # The brief arrives on stdin, never as a trailing argument: several Claude
+  # Code flags are variadic and swallow a positional prompt, and a long slice
+  # can exceed the argument limit. Both CLIs read a prompt from stdin.
+  case "$agent" in
+    claude) AGENT_CMD='claude --dangerously-skip-permissions
+              --append-system-prompt "$(cat $HOME/job/orchestrator.md)"
+              --agents "$(cat $HOME/job/agents.json)"
+              -p < $HOME/job/task.md' ;;
+    # Codex has no subagent primitive, so orchestration is instruction-only:
+    # the brief tells it to shell out to `codex exec` for isolated sub-tasks.
+    codex)  AGENT_CMD='cat $HOME/job/orchestrator.md $HOME/job/task.md |
+              codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -' ;;
+    *)      die "agent must be claude or codex" ;;
+  esac
+  AGENT_CMD="$(echo "$AGENT_CMD" | tr '\n' ' ' | tr -s ' ')"
+
+  NWO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+  BASE_REF="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  [ -z "$DRY" ] || { NWO="${NWO:-dry/repo}"; BASE_REF="${BASE_REF:-main}"; }
+  [ -n "$NWO" ]      || die "not in a GitHub repo (or gh not authenticated)"
+  [ -n "$BASE_REF" ] || die "not in a git repo"
+
+  local work n=1
+  work="$(mktemp -d)"
+  if [ -n "$plan" ] && [ "$slices" != off ]; then
+    n="$(split_slices "$plan" "$work")"
+    [ "$n" -gt 0 ] || die "plan has '## Slice:' headings but no content under them"
+  else
+    { [ -n "$plan" ] && cat "$plan" || printf '%s\n' "$msg"; } > "$work/1.md"
+    { [ -n "$plan" ] && head -1 "$plan" | sed 's/^#* *//' || printf '%s\n' "$msg"; } > "$work/1.title"
+  fi
+  say "$n slice(s) → $n job(s), agent=$agent, profile=$PROFILE, base=$BASE_REF"
+
+  [ -n "$DRY" ] || { preflight; ensure_key; ensure_firewall; }
+
+  local i title branch job
+  # ponytail: boots are sequential; parallelise if you routinely submit >5 slices.
+  for i in $(seq 1 "$n"); do
+    title="$(head -c 120 "$work/$i.title")"
+    branch="${prefix:-agent}/$(date +%m%d-%H%M)-$(slugify "$title")"
+    job="hdev-$(slugify "$branch")-$i"
+
+    if [ -n "$DRY" ]; then
+      printf 'job=%s branch=%s title=%s\n  cmd=%s\n' "$job" "$branch" "$title" "$AGENT_CMD"
+      continue
+    fi
+
+    boot "$job"
+    prepare_box "$IP"
+    ship_secrets "$IP"
+    ship_skills "$IP"
+    rssh "$IP" "umask 077 && cat > $RHOME/job/task.md"   < "$work/$i.md"
+    orchestrator "$agent" | rssh "$IP" "cat > $RHOME/job/orchestrator.md"
+    if [ "$agent" = claude ]; then
+      agents_json | rssh "$IP" "cat > $RHOME/job/agents.json"
+    fi
+    runner | rssh "$IP" "cat > $RHOME/job/run.sh && chmod +x $RHOME/job/run.sh"
+    rssh "$IP" "chown -R $RUSER:$RUSER $RHOME"
+    # --uid, and HOME set explicitly: systemd gives a unit a minimal environment
+    # with no HOME, which makes every `git config --global` fail. Claude Code
+    # also refuses --dangerously-skip-permissions when running as root.
+    rssh "$IP" "systemd-run --unit=$UNIT --description=$(printf %q "$title") \
+      --uid=$RUSER --gid=$RUSER --working-directory=$RHOME \
+      --setenv=HOME=$RHOME --setenv=USER=$RUSER \
+      --setenv=BASE_REF=$(printf %q "$BASE_REF") --setenv=BRANCH=$(printf %q "$branch") \
+      --setenv=TITLE=$(printf %q "$title") --setenv=AGENT_CMD=$(printf %q "$AGENT_CMD") \
+      $RHOME/job/run.sh" >/dev/null
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$job" "$branch" "$NWO" "$agent" "$BASE_REF" \
+      "$(date -u +%Y-%m-%dT%H:%MZ)" >> "$JOBS"
+    say "started $job → $branch"
+  done
+  rm -rf "$work"
+  [ -n "$DRY" ] || say "laptop is free. check later with: hdev ps"
+}
+
+job_status() {
+  local ip st res
+  ip="$(hcloud server ip "$1" 2>/dev/null || true)"
+  [ -n "$ip" ] || { echo gone; return; }
+  st="$(rssh "$ip" -n -o ConnectTimeout=6 "systemctl is-active $UNIT 2>/dev/null; \
+        systemctl show $UNIT -p Result --value 2>/dev/null" 2>/dev/null || true)"
+  [ -n "$st" ] || { echo unreachable; return; }
+  res="$(printf '%s\n' "$st" | sed -n 2p)"
+  case "$(printf '%s\n' "$st" | sed -n 1p)" in
+    active|activating|reloading) echo running ;;
+    failed)                      echo failed ;;
+    inactive)                    [ "$res" = success ] && echo done || echo "exited:${res:-?}" ;;
+    *)                           echo starting ;;
+  esac
+}
+
+# 30m | 4h | 2d | bare seconds
+secs() {
+  case "$1" in
+    *d) echo $(( ${1%d} * 86400 )) ;;
+    *h) echo $(( ${1%h} * 3600 )) ;;
+    *m) echo $(( ${1%m} * 60 )) ;;
+    *s) echo "${1%s}" ;;
+    *)  echo "$1" ;;
+  esac
+}
+
+# name<TAB>seconds-since-created, from Hetzner's own record rather than our
+# local jobs file, so a VM created by a crashed submit is still counted.
+server_ages() {
+  command -v python3 >/dev/null || return 0
+  hcloud server list -l hdev=1 -o json 2>/dev/null | python3 -c "
+import json,sys,datetime
+now = datetime.datetime.now(datetime.timezone.utc)
+for srv in json.load(sys.stdin):
+    born = datetime.datetime.fromisoformat(srv['created'].replace('Z','+00:00'))
+    print('%s\t%d' % (srv['name'], (now-born).total_seconds()))
+" 2>/dev/null
+}
+
+human_age() {
+  local s="$1"
+  if   [ "$s" -ge 86400 ]; then echo "$((s/86400))d$(( (s%86400)/3600 ))h"
+  elif [ "$s" -ge 3600 ];  then echo "$((s/3600))h$(( (s%3600)/60 ))m"
+  else echo "$((s/60))m"; fi
+}
+
+cmd_ps() {
+  [ -s "$JOBS" ] || { echo "no jobs yet"; return; }
+  local ages limit old=0
+  ages="$(server_ages)"; limit="$(secs "$MAXAGE")"
+  printf '%-38s %-11s %-7s %s\n' JOB STATUS AGE BRANCH
+  # ponytail: one SSH per job, sequential. Fine to a few dozen jobs.
+  while IFS=$'\t' read -r job branch _nwo _agent _base _created; do
+    local age agestr
+    age="$(printf '%s\n' "$ages" | awk -F'\t' -v j="$job" '$1==j{print $2}')"
+    if [ -n "$age" ]; then
+      agestr="$(human_age "$age")"
+      [ "$age" -lt "$limit" ] || { agestr="$agestr!"; old=$((old+1)); }
+    else
+      agestr="-"
+    fi
+    printf '%-38s %-11s %-7s %s\n' "$job" "$(job_status "$job")" "$agestr" "$branch"
+  done < "$JOBS"
+  [ "$old" -eq 0 ] || say "$old VM(s) older than $MAXAGE (marked !) — 'hdev reap --max-age $MAXAGE' deletes them"
+}
+
+cmd_logs() {
+  local follow=""
+  [ "${1:-}" = "-f" ] && { follow=-f; shift; }
+  [ $# -ge 1 ] || die "usage: hdev logs [-f] <job>"
+  rssh "$(hcloud server ip "$1")" -t "journalctl -u $UNIT --no-pager ${follow:--n 200}"
+}
+
+cmd_cancel() {
+  [ $# -ge 1 ] || die "usage: hdev cancel <job>"
+  rssh "$(hcloud server ip "$1")" "systemctl stop $UNIT" && say "stopped $1 (VM still up — hdev reap)"
+}
+
+# Delete VMs whose job is no longer running, and forget them.
+cmd_reap() {
+  local maxage="" limit=0 ages
+  [ "${1:-}" != "--max-age" ] || { maxage="${2:?usage: hdev reap [--max-age 4h]}"; shift 2; }
+  [ -z "$maxage" ] || limit="$(secs "$maxage")"
+  [ -s "$JOBS" ] || { say "no jobs"; return; }
+  ages="$(server_ages)"
+  local keep; keep="$(mktemp)"
+  while IFS=$'\t' read -r job branch nwo agent base created; do
+    local st age; st="$(job_status "$job")"
+    age="$(printf '%s\n' "$ages" | awk -F'\t' -v j="$job" '$1==j{print $2}')"
+    # A running job past the age limit is a runaway, not work in progress.
+    if [ -n "$maxage" ] && [ -n "$age" ] && [ "$age" -ge "$limit" ] && [ "$st" != gone ]; then
+      hcloud server delete "$job" >/dev/null 2>&1 \
+        && say "deleted $job — $(human_age "$age") old, past $maxage (was: $st)"
+      continue
+    fi
+    case "$st" in
+      running|starting|unreachable)
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$job" "$branch" "$nwo" "$agent" "$base" "$created" >> "$keep" ;;
+      gone) say "forgetting $job (already deleted)" ;;
+      *)    hcloud server delete "$job" >/dev/null 2>&1 && say "deleted $job" ;;
+    esac
+  done < "$JOBS"
+  mv "$keep" "$JOBS"
+
+  # A VM from a crashed submit never reached the jobs file. Nothing else finds these.
+  local orphan
+  while IFS=$'\t' read -r orphan age; do
+    [ -n "$orphan" ] || continue
+    grep -q "^$orphan	" "$JOBS" 2>/dev/null && continue
+    if [ -n "$maxage" ] && [ "$age" -ge "$limit" ]; then
+      hcloud server delete "$orphan" >/dev/null 2>&1 \
+        && say "deleted untracked VM $orphan ($(human_age "$age") old)"
+    else
+      say "untracked VM $orphan is $(human_age "$age") old — 'hdev reap --max-age ...' removes it"
+    fi
+  done <<< "$(server_ages)"
+}
+
+# ── subscription auth, captured once, shipped to every job ──
+#
+# Claude: `claude setup-token` mints a one-year OAuth token that works on any
+# machine, so the browser step happens here and no relay is needed.
+# Codex: the credentials are a file; any successful login produces one.
+# `--on <job>` runs the login on the VM itself instead, for the case where you
+# want a box authenticated independently of this laptop. Codex prints a device
+# code; Claude prints a URL. Both appear in this terminal — open them here.
+cmd_login() {
+  local target="${1:-all}" ip tok
+  mkdir -p "$STATE"
+
+  if [ "${2:-}" = "--on" ]; then
+    [ -n "${3:-}" ] || die "usage: hdev login <claude|codex> --on <job>"
+    ip="$(hcloud server ip "$3")"
+    say "starting login on $3 — open the URL it prints, in the browser here"
+    case "$target" in
+      codex)  rssh "$ip" -t "codex login --device-auth"
+              rssh "$ip" "cat /root/.codex/auth.json" > "$CODEXAUTH" && chmod 600 "$CODEXAUTH"
+              say "codex credentials copied back — future jobs reuse them" ;;
+      claude) rssh "$ip" -t "claude setup-token" ;;
+      *)      die "usage: hdev login <claude|codex> --on <job>" ;;
+    esac
+    return
+  fi
+
+  case "$target" in
+    status)
+      [ -f "$AUTHFILE" ]  && grep -o 'export [A-Z_]*' "$AUTHFILE" | sed 's/export /claude: /' \
+                          || echo "claude: not captured (run: hdev login claude)"
+      [ -f "$CODEXAUTH" ] && echo "codex:  captured $CODEXAUTH" \
+                          || echo "codex:  not captured (run: hdev login codex)"
+      return ;;
+  esac
+
+  case "$target" in claude|all)
+    say "minting a one-year subscription token — a browser opens on this machine"
+    claude setup-token || die "setup-token failed (needs a Claude subscription)"
+    printf 'paste the token here: ' >&2
+    read -r tok
+    [ -n "$tok" ] || die "no token pasted"
+    umask 077; printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\n' "$tok" > "$AUTHFILE"
+    say "stored in $AUTHFILE — every job now uses your subscription" ;;
+  esac
+
+  case "$target" in codex|all)
+    [ -f "$HOME/.codex/auth.json" ] || codex login
+    [ -f "$HOME/.codex/auth.json" ] || die "codex login produced no credentials"
+    cp "$HOME/.codex/auth.json" "$CODEXAUTH"; chmod 600 "$CODEXAUTH"
+    say "codex credentials stored in $CODEXAUTH" ;;
+  esac
+
+  case "$target" in claude|codex|all|status) ;; *) die "usage: hdev login [claude|codex|status] [--on <job>]" ;; esac
+}
+
+# ── talk to the running orchestrator ──
+#
+# Claude forks the job's conversation, so you get its full context and its
+# thread is left untouched — safe to ask while the job is still working.
+# -c continues the real thread instead, so the agent acts on what you say.
+cmd_ask() {
+  local cont="" job q agent ip fork
+  [ "${1:-}" != "-c" ] || { cont=1; shift; }
+  [ $# -ge 2 ] || die "usage: hdev ask [-c] <job> \"<question>\""
+  job="$1"; q="$2"
+  ip="$(hcloud server ip "$job")" || die "no such job: $job"
+  agent="$(awk -F'\t' -v j="$job" '$1==j{print $4}' "$JOBS" 2>/dev/null | head -1)"
+  agent="${agent:-claude}"
+
+  case "$agent" in
+    claude)
+      fork=--fork-session
+      [ -z "$cont" ] || fork=""
+      printf '%s' "$q" | rssh "$ip" \
+        "su - $RUSER -c '. ~/.hdev-env && cd ~/work && claude --dangerously-skip-permissions --append-system-prompt \"\$(cat ~/job/orchestrator.md)\" --agents \"\$(cat ~/job/agents.json)\" --continue $fork -p'" ;;
+    codex)
+      [ "$(job_status "$job")" != running ] \
+        || die "a running codex session cannot be resumed — try: hdev logs $job"
+      printf '%s' "$q" | rssh "$ip" \
+        "su - $RUSER -c '. ~/.hdev-env && cd ~/work && codex exec resume --last --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -'" ;;
+  esac
+}
+
+# The orchestrator keeps this current, so it answers "how is it going" for free.
+cmd_status() {
+  [ $# -ge 1 ] || die "usage: hdev status <job>"
+  rssh "$(hcloud server ip "$1")" "cat $RHOME/job/status.md 2>/dev/null" \
+    || say "no status.md yet — the job may not have started work"
+}
+
+cmd_image() {
+  [ -z "${1:-}" ] || PROFILE="$1"
+  [ "$PROFILE" = base ] || [ -f "$PROFILES/$PROFILE.sh" ] \
+    || die "no profile script at $PROFILES/$PROFILE.sh"
+  preflight; ensure_key; ensure_firewall
+  SERVER="hdev-imgbuild-$$"
+  trap 'hcloud server delete "$SERVER" >/dev/null 2>&1 || true' EXIT
+  say "building the \"$PROFILE\" image (node, gh, claude, codex + the profile script)"
+  boot "$SERVER" force-base
+  capture "$SERVER" "$PROFILE"
+}
+
+# Turn a powered-off server into the snapshot for a profile, replacing any
+# previous one. Scrubbing first is not optional: a job box holds your
+# subscription token and the checked-out repo, and a snapshot would bake both in.
+capture() {
+  local server="$1" prof="$2" old
+  say "scrubbing credentials and work tree before capture"
+  rssh "$(hcloud server ip "$server")" \
+    "rm -rf $RHOME/.hdev-env $RHOME/.codex $RHOME/.claude $RHOME/work $RHOME/job \
+            /root/.hdev-env /root/.codex /root/job /etc/sudoers.d/90-hdev-$RUSER; \
+     userdel -r $RUSER 2>/dev/null || true" || die "scrub failed — refusing to capture"
+  hcloud server shutdown --wait "$server" >/dev/null
+  old="$(snapshot_id "$prof")"
+  hcloud server create-image --type snapshot --description "hdev-$prof" \
+    --label "hdev-profile=$prof" "$server" >/dev/null
+  [ -z "$old" ] || hcloud image delete "$old" >/dev/null
+  say "snapshot for profile '$prof' is ready"
+}
+
+# Capture a snapshot from a job's own VM. The agent sets the box up however it
+# likes; you decide when that becomes a reusable profile. The VM never holds a
+# Hetzner token, so it cannot do this itself.
+cmd_snapshot() {
+  [ $# -ge 2 ] || die "usage: hdev snapshot <job> <profile>"
+  local st; st="$(job_status "$1")"
+  [ "$st" != running ] || die "$1 is still running — 'hdev cancel $1' first"
+  [ "$st" != gone ]    || die "$1 no longer exists"
+  preflight
+  capture "$1" "$2"
+  hcloud server delete "$1" >/dev/null && say "deleted $1"
+}
+
+cmd_images() {
+  # hcloud already prints image_size with its unit; reformatting it doubled the
+  # unit, so let its own table do the work.
+  hcloud image list --type snapshot --selector hdev-profile \
+    -o columns=description,id,image_size,created,age
+}
+
+# Where agents should implement: "local" (this machine) or "hetzner" (a VM).
+cmd_mode() {
+  case "${1:-}" in
+    "")            [ -s "$MODEFILE" ] && cat "$MODEFILE" || echo local ;;
+    local|hetzner) mkdir -p "$(dirname "$MODEFILE")"; printf '%s\n' "$1" >"$MODEFILE"
+                   say "implementation now runs: $1" ;;
+    *)             die "usage: hdev mode [local|hetzner]" ;;
+  esac
+}
+
+cmd_ssh()  { [ $# -ge 1 ] || die "usage: hdev ssh <job>"; rssh "$(hcloud server ip "$1")"; }
+cmd_nuke() { hcloud server list -l hdev=1 -o noheader -o columns=name | xargs -r hcloud server delete; : > "$JOBS"; }
+
+case "${1:-}" in
+  login)  shift; cmd_login "$@" ;;
+  submit) shift; cmd_submit "$@" ;;
+  ps)     shift; cmd_ps "$@" ;;
+  ask)    shift; cmd_ask "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  logs)   shift; cmd_logs "$@" ;;
+  cancel) shift; cmd_cancel "$@" ;;
+  reap)   shift; cmd_reap "$@" ;;
+  image)  shift; cmd_image "$@" ;;
+  images) shift; cmd_images "$@" ;;
+  snapshot) shift; cmd_snapshot "$@" ;;
+  mode)   shift; cmd_mode "$@" ;;
+  ssh)    shift; cmd_ssh "$@" ;;
+  nuke)   shift; cmd_nuke "$@" ;;
+  *) cat >&2 <<USAGE
+hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
+
+  hdev login                         capture subscription auth (once)
+  hdev login <claude|codex> --on <job>   log in on the VM instead
+  hdev submit [-a claude|codex] [-p profile] [-t type] [-b prefix] [-1] <plan.md>
+  hdev submit -m "<one task>"        skip the plan file
+  hdev ps                            status of every job
+  hdev status <job>                  the orchestrator's own progress notes
+  hdev ask [-c] <job> "<question>"   ask the remote agent; -c to instruct it
+  hdev logs [-f] <job>               raw output of the run
+  hdev cancel <job> | hdev ssh <job>
+  hdev reap [--max-age 4h]           delete finished VMs; with --max-age,
+                                     runaways and untracked VMs too
+  hdev image [profile]               build/rebuild a profile snapshot
+  hdev images                        list the profile snapshots you have
+  hdev snapshot <job> <profile>      turn a finished job's VM into a profile
+  hdev mode [local|hetzner]          where agents implement (default: local)
+  hdev nuke                          delete every hdev VM
+
+A plan is split on '## Slice: <title>' headings — one slice, one VM, one
+branch, one PR. Use -1 to run the whole file as a single job.
+
+The remote agent runs as an orchestrator and delegates to subagents. It keeps
+notes in '$RHOME/job/status.md', which is what 'hdev status' prints.
+
+env: HCLOUD_TOKEN, GH_TOKEN (or gh auth). Agent auth comes from 'hdev login';
+     ANTHROPIC_API_KEY / OPENAI_API_KEY still work and bill the API instead.
+     HDEV_TYPE=$TYPE HDEV_LOCATION=$LOCATION HDEV_SSH_KEY=$SSH_KEY
+USAGE
+  exit 1 ;;
+esac
