@@ -217,6 +217,7 @@ check "skill builds a profile first run" "First run in a project"  "$sk"
 check "skill reads CI for dependencies"  "CI workflow"             "$sk"
 check "skill warns base has no browser"  "no browser"              "$sk"
 check "skill flags the pi usage gap"     "does not cover \`pi\` jobs" "$sk"
+check "skill quantifies the subagent share" "13% of cache-reads"      "$sk"
 # A finished job is still usable: reaping is the last step, not the first.
 check "skill keeps finished jobs alive"  "still a collaborator"     "$sk"
 check "skill reaps last, not first"      "Reap last, not first"     "$sk"

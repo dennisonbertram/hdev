@@ -443,6 +443,16 @@ The failure the slicing advice exists to prevent is the other extreme: one brief
 with ten issues that ran 169 turns against a 1 MB context for 6.3M cache-reads.
 Judge by how big each piece's context will get, not by counting issues.
 
+**Why cheap subagents do not make brief size irrelevant.** They work — measured
+on a real job, haiku carried **29% of output tokens**. But it carried only
+**13% of cache-reads**, and cache-reads are two orders of magnitude the larger
+number. The orchestrator's own context accounted for **86%**, because every
+delegation's result comes back into that context and every later turn re-reads
+it. Cheap workers shift who does the writing; they do not stop the
+orchestrator's conversation growing. Cost-weighted, with cheap subagents active
+throughout, slicing four small items still cost **1.47x more per item**
+($0.248 vs $0.169). Both levers are real, and neither replaces the other.
+
 **2. The workers are already cheap; leave them that way.** `hdev` defines four
 subagents and sets their models: `implementer`, `tester` and `researcher` run on
 haiku, `reviewer` on sonnet, because judgement is worth paying for and reading
