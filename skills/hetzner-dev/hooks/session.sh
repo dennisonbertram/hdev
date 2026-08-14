@@ -24,8 +24,17 @@ JOBS="$STATE/jobs.tsv"
 # `hdev reap` deletes the VM of every job that has finished, failed or
 # vanished. It keeps running, starting and usage-limited jobs. Its output goes
 # to a file because a SessionEnd hook has no terminal left to print to.
+#
+# Set HDEV_REAP_IDLE to a duration (for example 1h) to also clear a job whose
+# agent stopped writing files that long ago. That is opt-in: deleting a job
+# that still reports as running is a bigger decision than this hook should
+# make on its own.
 if [ "${1:-}" = end ]; then
-  hdev reap >"$STATE/last-reap.log" 2>&1 || true
+  if [ -n "${HDEV_REAP_IDLE:-}" ]; then
+    hdev reap --idle "$HDEV_REAP_IDLE" >"$STATE/last-reap.log" 2>&1 || true
+  else
+    hdev reap >"$STATE/last-reap.log" 2>&1 || true
+  fi
 fi
 
 [ -s "$JOBS" ] || exit 0

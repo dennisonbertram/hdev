@@ -185,9 +185,24 @@ check "runner marks itself while waiting" "job/waiting" "$rn"
 check "status reports waiting distinctly" "waiting-on-limit" "$(sed -n '/^job_status()/,/^}/p' "$HDEV")"
 check "reap spares a waiting job"         "waiting for its usage window" "$(sed -n '/^cmd_reap()/,/^}/p' "$HDEV")"
 
-# Usage reporting must survive the VM being deleted.
-reapblk="$(sed -n '/^cmd_reap()/,/^}/p' "$HDEV")"
-countcheck "reap captures usage before deleting" 2 "usage_row" "$reapblk"
+# Usage reporting must survive the VM being deleted. Assert the invariant, not
+# a count: every delete path records usage first, so the two must stay equal as
+# delete paths are added. A hard-coded number here goes stale on the next one.
+reapblk="$(sed -n '/^cmd_reap()/,/^}$/p' "$HDEV")"
+# One delete path, so the ordering cannot drift. Scope to the tracked-job loop:
+# the orphan sweep after it is exempt by design -- an untracked VM never
+# reached the jobs file, so it has no usage to record.
+trackedblk="$(printf '%s\n' "$reapblk" | sed -n '1,/done < "\$JOBS"/p')"
+countcheck "tracked jobs are deleted only via reap_delete" 0 "hcloud server delete" "$trackedblk"
+if [ "$(printf '%s\n' "$trackedblk" | grep -c 'reap_delete')" -ge 3 ]
+then echo "ok   every tracked delete path goes through reap_delete"
+else echo "FAIL a tracked delete path bypasses reap_delete"; fail=1; fi
+# The usage record lives on the VM, so it must be read before the VM goes.
+delblk="$(sed -n '/^reap_delete()/,/^}/p' "$HDEV")"
+if [ "$(printf '%s\n' "$delblk" | grep -n 'usage_row' | cut -d: -f1 | head -1)" \
+   -lt "$(printf '%s\n' "$delblk" | grep -n 'hcloud server delete' | cut -d: -f1 | head -1)" ]
+then echo "ok   reap_delete records usage before deleting"
+else echo "FAIL reap_delete deletes before recording usage"; fail=1; fi
 
 # Every path that deletes a VM must capture its usage first, or the record dies
 # with the box. This was found by a cleanup that went around reap.
@@ -396,6 +411,75 @@ check "bad agent rejected"   "must be claude, claude-pi, codex or pi" "$("$HDEV"
 check "empty submit rejected" "usage: hdev submit"     "$("$HDEV" submit 2>&1)"
 check "bad flag rejected"     "unknown flag"           "$("$HDEV" submit --nope -m hi 2>&1)"
 check "missing plan rejected" "plan file not found"    "$("$HDEV" submit /no/such/plan.md 2>&1)"
+
+# ── reap --idle ──
+# Its own state dir: the submit checks above populated the shared one, and a
+# reap that gets past the empty-jobs check would make real Hetzner and SSH
+# calls, breaking the offline guarantee.
+RS="$(mktemp -d)"
+reap() { HDEV_STATE_DIR="$RS" "$HDEV" reap "$@" 2>&1 | head -1; }
+
+check "bare --idle rejected"        "--idle needs a duration"  "$(reap --idle)"
+check "bad duration rejected"       "'30q' is not a duration"  "$(reap --idle 30q)"
+check "flag not eaten as a value"   "'--max-age' is not a duration" "$(reap --idle --max-age 4h)"
+check "misplaced suffix rejected"   "'3h0' is not a duration"  "$(reap --idle 3h0)"
+check "negative rejected"           "'-5m' is not a duration"  "$(reap --idle -5m)"
+check "unknown reap flag rejected"  "usage: hdev reap"         "$(reap --bogus)"
+check "bare --max-age rejected"     "--max-age needs a duration" "$(reap --max-age)"
+# A bad duration must not reach the arithmetic test, which would abort with a
+# raw bash error instead of telling the user what was wrong.
+countcheck "no raw bash arithmetic error" 0 "integer expression" "$(reap --idle 30q)"
+# Valid flags reach the existing empty-jobs path, which proves they parsed.
+check "plain reap still works"      "no jobs" "$(reap)"
+check "--idle parses"               "no jobs" "$(reap --idle 30m)"
+check "--idle combines with --max-age" "no jobs" "$(reap --idle 30m --max-age 4h)"
+check "order does not matter"       "no jobs" "$(reap --max-age 2d --idle 90s)"
+rm -rf "$RS"
+
+# Idle must be measurable for every harness. pi and codex write nothing under
+# .claude/projects, so watching only that made a healthy pi job look idle --
+# and --idle would have deleted it.
+idleblk="$(sed -n '/^job_idle()/,/^}/p' "$HDEV")"
+check "idle watches claude sessions" ".claude/projects" "$idleblk"
+check "idle watches pi sessions"     "/.pi"             "$idleblk"
+check "idle watches codex sessions"  "/.codex"          "$idleblk"
+check "idle watches the work tree"   "/work"            "$idleblk"
+check "idle prunes heavy dirs"       "node_modules"     "$idleblk"
+check "idle tolerates absent paths"  "2>/dev/null"      "$idleblk"
+# An unquoted heredoc would expand $(...) and ${...} on this machine.
+check "idle heredoc is quoted"       "<<'SH'"           "$idleblk"
+
+reapblk="$(sed -n '/^cmd_reap()/,/^}$/p' "$HDEV")"
+check "reap accepts --idle"          "--idle"           "$reapblk"
+# usage-before-delete is asserted on reap_delete above, which is now the only
+# delete path for a tracked job.
+# job_idle returns data from a VM running an agent with sudo. Anything but
+# digits is "not measurable" and must never delete.
+check "idle reading is validated"    '*[!0-9]*'         "$reapblk"
+check "reap reports what it keeps"   "keeping "         "$reapblk"
+# waiting-on-limit writes no files while healthy, so it looks maximally idle.
+# Its carve-out has to come before any idle logic can see it.
+wl="$(printf '%s\n' "$reapblk" | grep -n 'waiting-on-limit' | head -1 | cut -d: -f1)"
+il="$(printf '%s\n' "$reapblk" | grep -n 'job_idle'         | head -1 | cut -d: -f1)"
+ml="$(printf '%s\n' "$reapblk" | grep -n 'maxage'           | head -1 | cut -d: -f1)"
+[ -n "$wl" ] && [ -n "$il" ] && [ "$wl" -lt "$il" ] \
+  && echo "ok   waiting-on-limit is carved out before idle logic" \
+  || { echo "FAIL waiting-on-limit could be idle-reaped"; fail=1; }
+[ -n "$ml" ] && [ "$ml" -lt "$il" ] \
+  && echo "ok   --max-age is still checked before idle" \
+  || { echo "FAIL --max-age no longer precedes the idle branch"; fail=1; }
+# unreachable cannot be measured -- the SSH that would measure it is what failed.
+if printf '%s\n' "$reapblk" | grep -q 'running|starting)'
+then echo "ok   idle branch excludes unreachable"
+else echo "FAIL idle branch may delete an unreachable VM"; fail=1; fi
+check "unreachable names its remedy" "reap --max-age" "$(sed -n '/^keep_hint()/,/^}/p' "$HDEV")"
+# human_age "" evaluates [ "" -ge 86400 ] and aborts the script under set -e.
+check "empty age is guarded"         "unknown age"    "$(sed -n '/^age_str()/,/^}/p' "$HDEV")"
+
+check "README documents --idle"      "reap --idle"    "$(cat "$(dirname "$0")/README.md")"
+check "SETUP cron uses --idle"       "hdev reap --idle" "$(cat "$(dirname "$0")/SETUP.md")"
+check "skill documents --idle"       "reap --idle"    "$(cat "$(dirname "$0")/skills/hetzner-dev/SKILL.md")"
+check "hook can opt into --idle"     "HDEV_REAP_IDLE" "$(cat "$(dirname "$0")/skills/hetzner-dev/hooks/session.sh")"
 
 # ── the session hook ──
 # A hook that silently does nothing is worse than no hook, so check that it

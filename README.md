@@ -123,6 +123,7 @@ hdev logs -f <job>     # raw output
 hdev ssh <job>         # repo is at /work
 hdev cancel <job>
 hdev reap              # delete the VMs of finished jobs
+hdev reap --idle 1h    # plus jobs whose agent stopped writing files an hour ago
 hdev reap --max-age 4h # plus runaways and VMs left by a crashed submit
 ```
 
@@ -132,7 +133,31 @@ for changes with `hdev ask -c` and it still remembers why it wrote what it
 wrote. Reap last, once the PR is reviewed and nothing is outstanding.
 
 `hdev ps` marks any VM past `HDEV_MAX_AGE` (default `6h`) with a `!`. Put
-`hdev reap --max-age 6h` in cron as a safety net — see [SETUP.md](SETUP.md).
+`hdev reap --idle 1h` in cron as a safety net — see [SETUP.md](SETUP.md).
+
+### Why a stuck VM needs `--idle`
+
+**Powering a server off does not stop Hetzner billing.** Hetzner charges for the
+server object until it is deleted. That is why no VM shuts itself down, and why
+deletion has to come from outside — a Hetzner token is project-scoped, so a
+token on a box where the agent has sudo could delete every other job's VM.
+
+Plain `hdev reap` is conservative and keeps four statuses: `running`,
+`starting`, `unreachable` and `waiting-on-limit`. It now names each one it
+keeps instead of keeping them silently.
+
+`--idle` is the flag that clears a stuck job, and it is **safer than
+`--max-age`**: age cannot tell a runaway from slow honest work, while an agent
+that is actually working keeps writing files. Idle is measured across every
+harness — Claude Code, pi and codex session directories plus the checkout at
+`~/work` — so a working `pi` job is not mistaken for a dead one.
+
+Two cases `--idle` cannot solve, which still need `--max-age`:
+
+- **`unreachable`** — the measurement needs SSH, and SSH is what failed. This
+  is common: the firewall allows SSH only from the IP you had at submit time,
+  so changing network makes every running VM unreachable at once.
+- **untracked VMs** left behind by a crashed submit.
 
 ### Reaping when the session ends
 
