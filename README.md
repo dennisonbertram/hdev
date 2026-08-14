@@ -2,7 +2,29 @@
 
 # hdev
 
-Plan on your laptop. Build on Hetzner. Close the laptop.
+Hand a coding task to an agent on a throwaway Hetzner VM. Close your laptop.
+It comes back as a pull request.
+
+## Install
+
+```bash
+npx skills add dennisonbertram/hdev          # the skill, for any agent
+git clone https://github.com/dennisonbertram/hdev && cd hdev
+export PATH="$PWD/bin:$PATH"                 # add to ~/.zshrc to keep it
+
+hcloud context create hdev                   # your Hetzner token
+hdev login                                   # your Claude subscription, once
+hdev image                                   # base snapshot, once (~2 min)
+
+hdev submit -m "add a --version flag and a test for it"
+```
+
+[**Full setup guide →**](SETUP.md) — getting a Hetzner account and token, from scratch.
+
+[![skills.sh](https://skills.sh/b/dennisonbertram/hdev)](https://skills.sh/dennisonbertram/hdev)
+[dennisonbertram.github.io/hdev](https://dennisonbertram.github.io/hdev) · MIT
+
+## What it does
 
 `hdev` does not drive a remote machine from here. It installs Claude Code and
 Codex on a Hetzner VM, hands one of them a written brief plus the repo, and
@@ -10,21 +32,7 @@ starts it under systemd. The job survives the SSH session ending, the terminal
 closing and the laptop sleeping. When it finishes it has pushed a branch and
 opened a PR.
 
-One slice of a plan → one VM → one branch → one PR.
-
-[![skills.sh](https://skills.sh/b/dennisonbertram/hdev)](https://skills.sh/dennisonbertram/hdev)
-
-**[dennisonbertram.github.io/hdev](https://dennisonbertram.github.io/hdev)** ·
-[Setup guide](SETUP.md) · MIT
-
-## Install
-
-```bash
-npx skills add dennisonbertram/hdev   # installs the skill into your agent
-git clone https://github.com/dennisonbertram/hdev && cd hdev
-export PATH="$PWD/bin:$PATH"          # add to ~/.zshrc to keep it
-./test_hdev.sh                        # 63 offline checks, no Hetzner calls
-```
+**One slice of a plan → one VM → one branch → one PR.**
 
 `npx skills add` works with Claude Code, Codex, Cursor and 70-odd other agents.
 To wire the skill up by hand instead:
@@ -34,8 +42,7 @@ ln -sfn "$PWD/skills/hetzner-dev" ~/.claude/skills/hetzner-dev
 ln -sfn "$PWD/skills/hetzner-dev" ~/.codex/skills/hetzner-dev
 ```
 
-**New here? [SETUP.md](SETUP.md)** walks through the Hetzner account, the token,
-auth and your first job.
+Run `./test_hdev.sh` for 63 offline checks that make no Hetzner calls.
 
 ## Credentials
 
