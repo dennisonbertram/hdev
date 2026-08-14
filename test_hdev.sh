@@ -131,6 +131,33 @@ check "reap kills runaway running jobs" "runaway"  "$reapblock"
 check "reap finds untracked VMs"      "untracked"  "$reapblock"
 check "ps flags over-age VMs"         "older than" "$(sed -n '/^cmd_ps()/,/^}/p' "$HDEV")"
 
+# The job script is generated as a heredoc, so a syntax error in it would only
+# surface on a real VM. Extract and check it here instead.
+awk '/^runner\(\) \{ cat <</,/^BASH$/' "$HDEV" | sed '1d;$d' > "$HDEV_STATE_DIR/runner.sh"
+if bash -n "$HDEV_STATE_DIR/runner.sh" 2>/dev/null
+then echo "ok   generated job script is valid bash"
+else echo "FAIL generated job script has a syntax error"; fail=1; fi
+
+# Usage limits need different handling: session resets in hours and is worth
+# waiting for; weekly resets in days; an Opus limit is bypassed by model choice.
+rn="$(cat "$HDEV_STATE_DIR/runner.sh")"
+check "waits on the session limit"        "hit your session limit" "$rn"
+check "refuses to wait out a weekly limit" "Not waiting"           "$rn"
+check "names the Opus limit separately"    "Opus usage limit"      "$rn"
+check "never sleeps on an unknown reset"   "not sleeping blind"    "$rn"
+check "resumes rather than restarting"     "--continue"            "$rn"
+check "reset time comes from a real clock" "ccusage"               "$rn"
+countcheck "only one sleep in the runner" 1 "^ *sleep " "$rn"
+
+# A job asleep waiting for a usage window must not be mistaken for a runaway.
+check "runner marks itself while waiting" "job/waiting" "$rn"
+check "status reports waiting distinctly" "waiting-on-limit" "$(sed -n '/^job_status()/,/^}/p' "$HDEV")"
+check "reap spares a waiting job"         "waiting for its usage window" "$(sed -n '/^cmd_reap()/,/^}/p' "$HDEV")"
+
+# Usage reporting must survive the VM being deleted.
+reapblk="$(sed -n '/^cmd_reap()/,/^}/p' "$HDEV")"
+countcheck "reap captures usage before deleting" 2 "usage_row" "$reapblk"
+
 # Firewall rules must be valid JSON built by a real function, not by a
 # multi-line process substitution (bash expands that once per line).
 eval "$(sed -n '/^fw_rules()/p' "$HDEV")"

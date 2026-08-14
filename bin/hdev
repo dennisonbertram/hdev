@@ -17,6 +17,7 @@ SSH_KEY="${HDEV_SSH_KEY:-$HOME/.ssh/id_hdev}"
 FIREWALL="${HDEV_FIREWALL:-hdev}"
 STATE="${HDEV_STATE_DIR:-$HOME/.config/hdev}"
 JOBS="$STATE/jobs.tsv"
+USAGE="$STATE/usage.tsv"
 AUTHFILE="$STATE/auth.env"
 CODEXAUTH="$STATE/codex-auth.json"
 MODEFILE="${HDEV_MODE_FILE:-$STATE/mode}"
@@ -98,11 +99,62 @@ cd "$HOME/work"
 git checkout "$BASE_REF"
 git checkout -b "$BRANCH"
 
-# The agent is the one step allowed to fail without aborting the job.
-set +e
-eval "$AGENT_CMD"
-rc=$?
-set -e
+OUT="$HOME/job/agent.out"
+LIMIT_RETRIES="${HDEV_LIMIT_RETRIES:-2}"
+
+note() { printf '%s\n' "$*" >> "$HOME/job/status.md"; echo "hdev: $*"; }
+
+# Seconds until the active 5-hour block ends, from ccusage's own machine-readable
+# endTime. Prints nothing if it cannot tell — a blind multi-hour sleep on a
+# billing VM is worse than failing loudly.
+seconds_to_reset() {
+  npx -y ccusage@latest blocks --active --json 2>/dev/null | python3 -c "
+import json,sys,datetime
+try: b=(json.load(sys.stdin).get('blocks') or [{}])[0]
+except Exception: raise SystemExit
+end=b.get('endTime')
+if not end: raise SystemExit
+end=datetime.datetime.fromisoformat(end.replace('Z','+00:00'))
+left=(end-datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+if 0 < left < 6*3600: print(int(left)+120)
+" 2>/dev/null
+}
+
+attempt=0
+while :; do
+  set +e
+  eval "$AGENT_CMD" 2>&1 | tee "$OUT"
+  rc=${PIPESTATUS[0]}
+  set -e
+  [ "$rc" -ne 0 ] || break
+
+  # Weekly and model limits are not worth waiting on: weekly resets in days,
+  # and an Opus limit is bypassed by changing model, not by sleeping.
+  if grep -qi "hit your weekly limit" "$OUT"; then
+    note "stopped: weekly usage limit reached. Not waiting — that would idle this VM for days. Resubmit after it resets."
+    break
+  fi
+  if grep -qi "hit your .* limit" "$OUT" && grep -qiv "hit your session limit" "$OUT" \
+     && grep -qi "hit your opus limit" "$OUT"; then
+    note "stopped: Opus usage limit reached. Waiting will not clear it — resubmit with a different model."
+    break
+  fi
+  grep -qi "hit your session limit" "$OUT" || break
+
+  [ "$attempt" -lt "$LIMIT_RETRIES" ] || { note "session limit hit again after $attempt wait(s) — giving up"; break; }
+  wait_for="$(seconds_to_reset)"
+  [ -n "$wait_for" ] || { note "session limit hit but the reset time is unknown — not sleeping blind. Resubmit later."; break; }
+
+  attempt=$((attempt+1))
+  note "session limit hit. Waiting ${wait_for}s for the window to roll over, then resuming session $attempt/$LIMIT_RETRIES. The VM stays up and keeps billing while it waits."
+  : > "$HOME/job/waiting"
+  sleep "$wait_for"
+  rm -f "$HOME/job/waiting"
+  note "window should have reset — resuming where the agent left off"
+  # Resume the existing conversation rather than restarting: a fresh run would
+  # redo work and lose everything the agent already decided.
+  AGENT_CMD='claude --dangerously-skip-permissions --continue -p <<<"The usage limit has reset. Continue exactly where you stopped."'
+done
 echo "hdev: agent exited $rc"
 
 git add -A
@@ -432,7 +484,10 @@ job_status() {
   ip="$(hcloud server ip "$1" 2>/dev/null || true)"
   [ -n "$ip" ] || { echo gone; return; }
   st="$(rssh "$ip" -n -o ConnectTimeout=6 "systemctl is-active $UNIT 2>/dev/null; \
-        systemctl show $UNIT -p Result --value 2>/dev/null" 2>/dev/null || true)"
+        systemctl show $UNIT -p Result --value 2>/dev/null; \
+        test -f $RHOME/job/waiting && echo waiting" 2>/dev/null || true)"
+  # A job sleeping through a usage-limit reset is not a runaway.
+  printf '%s\n' "$st" | grep -qx waiting && { echo "waiting-on-limit"; return; }
   [ -n "$st" ] || { echo unreachable; return; }
   res="$(printf '%s\n' "$st" | sed -n 2p)"
   case "$(printf '%s\n' "$st" | sed -n 1p)" in
@@ -472,6 +527,60 @@ human_age() {
   if   [ "$s" -ge 86400 ]; then echo "$((s/86400))d$(( (s%86400)/3600 ))h"
   elif [ "$s" -ge 3600 ];  then echo "$((s/3600))h$(( (s%3600)/60 ))m"
   else echo "$((s/60))m"; fi
+}
+
+# Token usage for one job, read from that box's own Claude transcript.
+# ccusage turns token counts into an API-equivalent dollar figure. On a
+# subscription that is a size comparison, not a bill — say so when reporting it.
+job_usage() {
+  local ip; ip="$(hcloud server ip "$1" 2>/dev/null)" || return 1
+  [ -n "$ip" ] || return 1
+  rssh "$ip" -n "su - $RUSER -c 'npx -y ccusage@latest blocks --active --json 2>/dev/null'" 2>/dev/null
+}
+
+# name<TAB>output_tokens<TAB>api_equiv_usd, or nothing if the box has no session yet
+usage_row() {
+  job_usage "$1" | python3 -c "
+import json,sys
+try:
+    blocks = json.load(sys.stdin).get('blocks') or []
+except Exception:
+    sys.exit(0)
+out = sum(b.get('tokenCounts',{}).get('outputTokens',0) for b in blocks)
+usd = sum(b.get('costUSD',0) or 0 for b in blocks)
+if out or usd: print('%s\t%d\t%.4f' % ('$1', out, usd))
+" 2>/dev/null
+}
+
+cmd_usage() {
+  local total_out=0 total_usd=0 rows="" row
+  printf '%-40s %12s %11s\n' JOB "OUT TOKENS" "API-EQUIV"
+  if [ -s "$JOBS" ]; then
+    while IFS=$'\t' read -r job _rest; do
+      row="$(usage_row "$job")"
+      [ -n "$row" ] || { printf '%-40s %12s %11s\n' "$job" "-" "-"; continue; }
+      rows="$rows$row"$'\n'
+      printf '%-40s %12s %11s\n' "$job" \
+        "$(printf '%s' "$row" | cut -f2)" "\$$(printf '%s' "$row" | cut -f3)"
+    done < "$JOBS"
+  fi
+  # jobs already reaped, captured before their VM was deleted
+  if [ -s "$USAGE" ]; then
+    echo "── reaped jobs (captured before deletion)"
+    awk -F'\t' '{printf "%-40s %12d %10.4f\n", $1, $2, $3}' "$USAGE"
+  fi
+  echo "── this machine, current 5-hour block"
+  npx -y ccusage@latest blocks --active --json 2>/dev/null | python3 -c "
+import json,sys
+try: b=(json.load(sys.stdin).get('blocks') or [{}])[0]
+except Exception: print('  (ccusage unavailable)'); raise SystemExit
+print('  %d output tokens, \$%.2f API-equivalent, block started %s'
+      % (b.get('tokenCounts',{}).get('outputTokens',0), b.get('costUSD',0) or 0,
+         (b.get('startTime') or '?')[:16]))
+" 2>/dev/null || echo "  (ccusage unavailable)"
+  echo
+  echo "API-equivalent is what these tokens would have cost on the API. On a"
+  echo "subscription it is a size comparison, not a bill."
 }
 
 cmd_ps() {
@@ -518,7 +627,13 @@ cmd_reap() {
     local st age; st="$(job_status "$job")"
     age="$(printf '%s\n' "$ages" | awk -F'\t' -v j="$job" '$1==j{print $2}')"
     # A running job past the age limit is a runaway, not work in progress.
+    if [ "$st" = waiting-on-limit ]; then
+      say "$job is waiting for its usage window to reset — keeping it"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$job" "$branch" "$nwo" "$agent" "$base" "$created" >> "$keep"
+      continue
+    fi
     if [ -n "$maxage" ] && [ -n "$age" ] && [ "$age" -ge "$limit" ] && [ "$st" != gone ]; then
+      usage_row "$job" >> "$USAGE" 2>/dev/null || true
       hcloud server delete "$job" >/dev/null 2>&1 \
         && say "deleted $job — $(human_age "$age") old, past $maxage (was: $st)"
       continue
@@ -527,7 +642,8 @@ cmd_reap() {
       running|starting|unreachable)
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$job" "$branch" "$nwo" "$agent" "$base" "$created" >> "$keep" ;;
       gone) say "forgetting $job (already deleted)" ;;
-      *)    hcloud server delete "$job" >/dev/null 2>&1 && say "deleted $job" ;;
+      *)    usage_row "$job" >> "$USAGE" 2>/dev/null || true
+            hcloud server delete "$job" >/dev/null 2>&1 && say "deleted $job" ;;
     esac
   done < "$JOBS"
   mv "$keep" "$JOBS"
@@ -703,6 +819,7 @@ case "${1:-}" in
   login)  shift; cmd_login "$@" ;;
   submit) shift; cmd_submit "$@" ;;
   ps)     shift; cmd_ps "$@" ;;
+  usage)  shift; cmd_usage "$@" ;;
   ask)    shift; cmd_ask "$@" ;;
   status) shift; cmd_status "$@" ;;
   logs)   shift; cmd_logs "$@" ;;
@@ -722,6 +839,7 @@ hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
   hdev submit [-a claude|codex] [-p profile] [-t type] [-b prefix] [-1] <plan.md>
   hdev submit -m "<one task>"        skip the plan file
   hdev ps                            status of every job
+  hdev usage                         tokens burned, per job and here
   hdev status <job>                  the orchestrator's own progress notes
   hdev ask [-c] <job> "<question>"   ask the remote agent; -c to instruct it
   hdev logs [-f] <job>               raw output of the run

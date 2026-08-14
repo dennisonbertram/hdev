@@ -197,6 +197,41 @@ question, not on a schedule.
 nothing. A `/loop` runs only until the session closes; for anything longer the
 user wants `/schedule`.
 
+## Seeing what the jobs cost
+
+```bash
+hdev usage
+```
+
+Per-job output tokens read from each box's own transcript, plus this machine's
+current 5-hour block. Report the figure as **API-equivalent** — what those
+tokens would have cost on the API. On a subscription it is a size comparison,
+not a bill. Never call it a charge.
+
+A job's usage record lives on its VM, so `hdev reap` would destroy it. `reap`
+captures the figure before deleting, into `~/.config/hdev/usage.tsv`, and
+`hdev usage` shows those reaped jobs too.
+
+## When a job hits the usage limit
+
+Claude Code emits three different limit messages and they need different
+responses. The job script already handles this — do not try to work around it:
+
+- **Session limit** (the 5-hour window) — the job sleeps until the window rolls
+  over, then **resumes the same conversation** rather than restarting, so no
+  work is lost. Up to `HDEV_LIMIT_RETRIES` times, default 2.
+- **Weekly limit** — the job stops. Waiting would idle a billing VM for days.
+  Tell the user to resubmit after it resets.
+- **Opus limit** — the job stops. Sleeping cannot clear a model-specific limit;
+  a different model would.
+
+A waiting job reports `waiting-on-limit` in `hdev ps`, and `hdev reap` refuses
+to delete it. **The VM keeps billing while it waits** — say so when you report
+that a job is waiting, and give the user the option to cancel instead.
+
+If the reset time cannot be determined, the job stops rather than sleeping
+blind. That is deliberate.
+
 ## Failure handling
 
 - `hdev ps` shows `failed` — read `hdev logs <job>`. The VM stays up so the

@@ -122,6 +122,36 @@ hdev reap --max-age 4h # plus runaways and VMs left by a crashed submit
 `hdev ps` marks any VM past `HDEV_MAX_AGE` (default `6h`) with a `!`. Put
 `hdev reap --max-age 6h` in cron as a safety net — see [SETUP.md](SETUP.md).
 
+## What it cost
+
+```bash
+hdev usage
+```
+
+Output tokens per job, read from each box's own transcript, plus this machine's
+current 5-hour block. The dollar figure is **API-equivalent** — what those
+tokens would have cost on the API. On a subscription it is a size comparison,
+not a bill.
+
+A job's usage record lives on its VM, so `reap` captures it before deleting and
+`hdev usage` still shows reaped jobs.
+
+## When a job hits the usage limit
+
+| Limit | What the job does |
+| --- | --- |
+| Session (5-hour) | Sleeps until the window rolls over, then **resumes the same conversation** — no work lost. Twice by default (`HDEV_LIMIT_RETRIES`). |
+| Weekly | Stops. Waiting would idle a billing VM for days. |
+| Opus | Stops. A model-specific limit is cleared by changing model, not by sleeping. |
+
+The reset time comes from `ccusage`'s machine-readable block end, not from
+parsing an error string. **If it cannot be determined, the job stops rather
+than sleeping blind** on a VM that bills by the hour.
+
+A waiting job shows as `waiting-on-limit` in `hdev ps`, and `hdev reap` will not
+delete it — including `--max-age`, which would otherwise mistake a long sleep
+for a runaway.
+
 ## Snapshot profiles
 
 A profile is a snapshot with a toolchain already installed, so the slow part of
