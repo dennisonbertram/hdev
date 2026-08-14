@@ -22,6 +22,9 @@ AUTHFILE="$STATE/auth.env"
 CODEXAUTH="$STATE/codex-auth.json"
 PIAUTH="$STATE/pi-auth.json"
 MODEFILE="${HDEV_MODE_FILE:-$STATE/mode}"
+CONFIG="$STATE/config"
+# Saved settings load first; a real environment variable still wins.
+[ ! -f "$CONFIG" ] || . "$CONFIG"
 # Skills copied from ~/.claude/skills into the job's own skill directory.
 SKILLS="${HDEV_SKILLS:-efficient-fable}"
 # Set by job_status: seconds a finished job has been idle, or empty.
@@ -34,7 +37,7 @@ JOB_IDLE=""
 MAXAGE="${HDEV_MAX_AGE:-6h}"
 # The pi harness is model-agnostic. Default to DeepSeek V4 Flash over
 # OpenRouter: $0.14/M in, $0.28/M out at the time of writing.
-PI_MODEL="${HDEV_PI_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
+PI_MODEL="${HDEV_PI_MODEL:-${SAVED_PI_MODEL:-openrouter/deepseek/deepseek-v4-flash}}"
 # HDEV_STRICT=1 removes Edit/Write from the orchestrator so delegation is
 # enforced by the harness rather than requested by the prompt.
 STRICT="${HDEV_STRICT:-}"
@@ -1047,6 +1050,46 @@ cmd_mode() {
   esac
 }
 
+# Curated, verified options. Prices are per million tokens at the time they
+# were checked; run `hdev model --list` again if that matters to a decision.
+model_catalog() { cat <<'TSV'
+cerebras/zai-glm-4.7	cerebras	fastest by far; 16.4K max output, so slices must be small
+openrouter/deepseek/deepseek-v4-flash	openrouter	cheapest: $0.14/M in, $0.28/M out, 1048k context
+openrouter/qwen/qwen3-coder	openrouter	$0.30/$1.00 per M, 262k context, tuned for code
+openrouter/z-ai/glm-4.7	openrouter	$0.40/$1.75 per M, 204k context; GLM without Cerebras
+openrouter/deepseek/deepseek-v4-pro	openrouter	$1.17/$2.34 per M when flash is not strong enough
+TSV
+}
+
+cmd_model() {
+  case "${1:-}" in
+    "")
+      echo "$PI_MODEL"
+      [ -f "$CONFIG" ] && grep -q SAVED_PI_MODEL "$CONFIG" || say "(default — 'hdev model <id>' to save a choice)"
+      return ;;
+    --list|-l)
+      printf '%-40s %-11s %s\n' MODEL PROVIDER NOTES
+      model_catalog | while IFS=$'\t' read -r m p n; do
+        printf '%-40s %-11s %s\n' "$m" "$p" "$n"
+      done
+      echo
+      say "Cerebras is fastest; OpenRouter has far more models. Any pi model id works, not just these."
+      say "Set one with: hdev model <id>   then: hdev login pi"
+      return ;;
+  esac
+  # any id is allowed — the catalog is guidance, not a whitelist
+  mkdir -p "$STATE"
+  grep -v '^SAVED_PI_MODEL=' "$CONFIG" 2>/dev/null > "$CONFIG.tmp" || true
+  printf 'SAVED_PI_MODEL=%q\n' "$1" >> "$CONFIG.tmp"
+  mv "$CONFIG.tmp" "$CONFIG"
+  say "pi model set to $1 (provider: ${1%%/*})"
+  case "$1" in
+    cerebras/*) say "Cerebras: fastest. Note the 16.4K output cap — keep slices small." ;;
+    openrouter/*) say "OpenRouter: widest model choice." ;;
+  esac
+  say "Now run 'hdev login pi' to capture the credential for ${1%%/*}."
+}
+
 cmd_ssh()  { [ $# -ge 1 ] || die "usage: hdev ssh <job>"; rssh "$(hcloud server ip "$1")"; }
 # Capture usage before deleting, exactly as reap does — otherwise the record
 # dies with the VM. Any delete path that skips this loses the numbers.
@@ -1074,6 +1117,7 @@ case "${1:-}" in
   images) shift; cmd_images "$@" ;;
   snapshot) shift; cmd_snapshot "$@" ;;
   mode)   shift; cmd_mode "$@" ;;
+  model)  shift; cmd_model "$@" ;;
   ssh)    shift; cmd_ssh "$@" ;;
   nuke)   shift; cmd_nuke "$@" ;;
   *) cat >&2 <<USAGE
@@ -1095,6 +1139,7 @@ hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
   hdev image [profile]               build/rebuild a profile snapshot
   hdev images                        list the profile snapshots you have
   hdev snapshot <job> <profile>      turn a finished job's VM into a profile
+  hdev model [--list | <id>]         which model the pi harness uses
   hdev mode [local|hetzner]          where agents implement (default: local)
   hdev nuke                          delete every hdev VM
 

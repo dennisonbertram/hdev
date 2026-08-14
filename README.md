@@ -162,6 +162,18 @@ Strict mode removes `Edit`, `Write` and `NotebookEdit` from the orchestrator so
 it has to delegate. A one-file change legitimately shows `0/0%`; judge against
 the size of the job.
 
+## Choosing the model for pi
+
+```bash
+hdev model --list        # options, providers, prices, and the trade-off
+hdev model <id>          # save a choice; persists, no env var to remember
+hdev login pi            # capture the credential for that provider
+```
+
+**Cerebras is much faster; OpenRouter has far more models.** Cerebras'
+`zai-glm-4.7` caps at 16.4K output, so slices whose diff exceeds that will not
+complete. The catalog is guidance — any pi model id is accepted.
+
 ## Choosing the agent
 
 ```bash
@@ -180,7 +192,7 @@ hdev submit -a codex plan.md   # Codex
 
 `pi` suits mechanical, well-specified work and does not consume your Claude
 window. Claude suits ambiguous work where a plausible-but-wrong answer is
-expensive. `HDEV_PI_MODEL` takes any OpenRouter model id.
+expensive. Pick pi's model with `hdev model` — see above.
 
 Needs `OPENROUTER_API_KEY`; `hdev` refuses to submit without it rather than
 booting a VM that cannot work.

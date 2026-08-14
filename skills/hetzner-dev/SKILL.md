@@ -65,6 +65,53 @@ Writing to a shell profile is deliberately **not** pre-approved in this
 skill's `allowed-tools`, so the user is asked before it happens. Do not work
 around that prompt, and tell them which file you are editing.
 
+## First run: set up the stock flow with the user
+
+Do this once per machine, before the first job. Two decisions, and they are the
+user's, not yours. Ask; do not pick silently.
+
+### Decision 1 — which agent runs the work
+
+```bash
+hdev login status
+```
+
+- **Claude Code** (default). Runs on the user's subscription, real enforced
+  subagents, safe to question mid-run. Needs `hdev login`.
+- **pi** (`-a pi`). Runs on any model through a provider key, does not touch
+  the Claude window at all, and is the right tool for mechanical work. No
+  subagent tool, and `hdev ask` refuses while it is running.
+
+Most people want Claude set up regardless, and pi as well if they do volume
+mechanical work. Set up Claude first; it is one command.
+
+### Decision 2 — if they want pi, which model
+
+Show them the real options and the trade-off, then let them choose:
+
+```bash
+hdev model --list
+```
+
+The trade-off in one line: **Cerebras is much faster, OpenRouter has far more
+models.** Say that, then note the constraint that actually bites — Cerebras'
+`zai-glm-4.7` caps at **16.4K output**, so a slice with a bigger diff will not
+complete and has to be split again. OpenRouter has no such cap on the cheap
+DeepSeek models and gives 1M context.
+
+Once they pick:
+
+```bash
+hdev model cerebras/zai-glm-4.7     # or any pi model id
+hdev login pi                       # captures the credential for that provider
+```
+
+`hdev model` saves the choice, so it is not an environment variable anyone has
+to remember. `hdev model` on its own shows what is set.
+
+**If they have no provider key**, say so plainly and move on with Claude. pi is
+an option, not a requirement, and nothing else depends on it.
+
 ## First run in a project: build it a profile
 
 The base image has node, git, gh and the agents. It has **no browser, no Docker,
@@ -272,11 +319,14 @@ subagents and safe mid-run questioning matter most exactly there.
 so I sent it to pi on DeepSeek — it will not touch your Claude window" is the
 kind of sentence the user wants.
 
-Override the model with `HDEV_PI_MODEL`, which takes any OpenRouter id:
+Which model pi uses is a saved setting, not a flag to remember:
 
 ```bash
-HDEV_PI_MODEL=openrouter/qwen/qwen3-coder hdev submit -a pi plan.md
+hdev model --list                        # options and the trade-off
+hdev model openrouter/qwen/qwen3-coder   # save it
 ```
+
+`HDEV_PI_MODEL` still overrides it for one command if you need that.
 
 `pi` needs `OPENROUTER_API_KEY`. `hdev` refuses to submit without it rather
 than booting a VM that cannot work.
