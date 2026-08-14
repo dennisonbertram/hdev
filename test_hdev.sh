@@ -189,14 +189,20 @@ check "reap spares a waiting job"         "waiting for its usage window" "$(sed 
 # a count: every delete path records usage first, so the two must stay equal as
 # delete paths are added. A hard-coded number here goes stale on the next one.
 reapblk="$(sed -n '/^cmd_reap()/,/^}$/p' "$HDEV")"
-# Scope to the tracked-job loop. The orphan sweep after it is exempt by design:
-# an untracked VM never reached the jobs file, so it has no usage to record.
+# One delete path, so the ordering cannot drift. Scope to the tracked-job loop:
+# the orphan sweep after it is exempt by design -- an untracked VM never
+# reached the jobs file, so it has no usage to record.
 trackedblk="$(printf '%s\n' "$reapblk" | sed -n '1,/done < "\$JOBS"/p')"
-u="$(printf '%s\n' "$trackedblk" | grep -c 'usage_row')"
-d="$(printf '%s\n' "$trackedblk" | grep -c 'hcloud server delete')"
-[ "$u" = "$d" ] && [ "$u" -gt 0 ] \
-  && echo "ok   every tracked-job delete path captures usage first ($u/$d)" \
-  || { echo "FAIL usage_row ($u) does not cover every tracked delete path ($d)"; fail=1; }
+countcheck "tracked jobs are deleted only via reap_delete" 0 "hcloud server delete" "$trackedblk"
+if [ "$(printf '%s\n' "$trackedblk" | grep -c 'reap_delete')" -ge 3 ]
+then echo "ok   every tracked delete path goes through reap_delete"
+else echo "FAIL a tracked delete path bypasses reap_delete"; fail=1; fi
+# The usage record lives on the VM, so it must be read before the VM goes.
+delblk="$(sed -n '/^reap_delete()/,/^}/p' "$HDEV")"
+if [ "$(printf '%s\n' "$delblk" | grep -n 'usage_row' | cut -d: -f1 | head -1)" \
+   -lt "$(printf '%s\n' "$delblk" | grep -n 'hcloud server delete' | cut -d: -f1 | head -1)" ]
+then echo "ok   reap_delete records usage before deleting"
+else echo "FAIL reap_delete deletes before recording usage"; fail=1; fi
 
 # Every path that deletes a VM must capture its usage first, or the record dies
 # with the box. This was found by a cleanup that went around reap.
@@ -445,7 +451,8 @@ check "idle heredoc is quoted"       "<<'SH'"           "$idleblk"
 
 reapblk="$(sed -n '/^cmd_reap()/,/^}$/p' "$HDEV")"
 check "reap accepts --idle"          "--idle"           "$reapblk"
-check "idle deletion records usage"  "usage_row"        "$reapblk"
+# usage-before-delete is asserted on reap_delete above, which is now the only
+# delete path for a tracked job.
 # job_idle returns data from a VM running an agent with sudo. Anything but
 # digits is "not measurable" and must never delete.
 check "idle reading is validated"    '*[!0-9]*'         "$reapblk"

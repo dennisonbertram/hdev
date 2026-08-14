@@ -919,6 +919,14 @@ cmd_cancel() {
   rssh "$(hcloud server ip "$1")" "systemctl stop $UNIT" && say "stopped $1 (VM still up — hdev reap)"
 }
 
+# Delete a job's VM, recording its usage first. The usage record lives on the
+# VM, so reading it after the delete would lose it -- keeping that ordering in
+# one place is why this is a function and not three copies.
+reap_delete() {
+  usage_row "$1" >> "$USAGE" 2>/dev/null || true
+  hcloud server delete "$1" >/dev/null 2>&1 && say "deleted $1 — $2"
+}
+
 # Delete VMs whose job is no longer running, and forget them.
 cmd_reap() {
   local maxage="" limit=0 idlestr="" idlelimit=0 ages
@@ -944,9 +952,7 @@ cmd_reap() {
       continue
     fi
     if [ -n "$maxage" ] && [ -n "$age" ] && [ "$age" -ge "$limit" ] && [ "$st" != gone ]; then
-      usage_row "$job" >> "$USAGE" 2>/dev/null || true
-      hcloud server delete "$job" >/dev/null 2>&1 \
-        && say "deleted $job — $(human_age "$age") old, past $maxage (was: $st)"
+      reap_delete "$job" "$(human_age "$age") old, past $maxage (was: $st)"
       continue
     fi
     # --idle deletes a job whose agent stopped writing files. It is safer than
@@ -964,9 +970,7 @@ cmd_reap() {
           case "$idle" in
             ''|*[!0-9]*) ;;
             *) if [ "$idle" -ge "$idlelimit" ]; then
-                 usage_row "$job" >> "$USAGE" 2>/dev/null || true
-                 hcloud server delete "$job" >/dev/null 2>&1 \
-                   && say "deleted $job — idle $(human_age "$idle"), past $idlestr (was: $st)"
+                 reap_delete "$job" "idle $(human_age "$idle"), past $idlestr (was: $st)"
                  continue
                fi ;;
           esac
@@ -977,8 +981,7 @@ cmd_reap() {
         say "keeping $job — $st, $(age_str "$age") old$(keep_hint "$st")"
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$job" "$branch" "$nwo" "$agent" "$base" "$created" >> "$keep" ;;
       gone) say "forgetting $job (already deleted)" ;;
-      *)    usage_row "$job" >> "$USAGE" 2>/dev/null || true
-            hcloud server delete "$job" >/dev/null 2>&1 && say "deleted $job" ;;
+      *)    reap_delete "$job" "$st" ;;
     esac
   done < "$JOBS"
   mv "$keep" "$JOBS"
