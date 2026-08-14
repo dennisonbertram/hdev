@@ -44,10 +44,20 @@ which puts the token in every process's environment.
 ## 3. Install hdev
 
 ```bash
-git clone <this repo> hdev && cd hdev
-export PATH="$PWD/bin:$PATH"          # add to ~/.zshrc or ~/.bashrc to keep it
-./test_hdev.sh                        # 63 offline checks, no Hetzner calls
+git clone https://github.com/dennisonbertram/hdev ~/develop/hdev
+mkdir -p ~/.local/bin && ln -sfn ~/develop/hdev/bin/hdev ~/.local/bin/hdev
+~/develop/hdev/test_hdev.sh           # 63 offline checks, no Hetzner calls
 ```
+
+That works if `~/.local/bin` is already on your PATH — check with
+`zsh -lic 'command -v hdev'`. If it prints nothing, add it:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # then open a new terminal
+```
+
+**`npx skills add` installs the skill, not the CLI.** The skill tells your agent
+how to do the above if `hdev` is missing, so you can also just ask it to.
 
 Make the skill available to your agent — both Claude Code and Codex read the
 same `SKILL.md` format:

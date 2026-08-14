@@ -5,7 +5,7 @@ metadata:
   author: dennisonbertram
   version: "1.0.0"
   argument-hint: <plan.md | -m "task">
-allowed-tools: Bash(hdev *) Bash(git status*) Bash(git fetch*) Bash(git log*) Bash(git diff*) Bash(git push*) Bash(gh pr *) Read Write Glob Grep
+allowed-tools: Bash(hdev*) Bash(hcloud*) Bash(command -v*) Bash(git clone*) Bash(mkdir -p*) Bash(ln -sfn*) Bash(zsh -lic*) Bash(bash -lic*) Bash(git status*) Bash(git fetch*) Bash(git log*) Bash(git diff*) Bash(git push*) Bash(gh pr *) Read Write Glob Grep Skill
 ---
 
 # Plan here, build there
@@ -17,6 +17,53 @@ it keeps going after the SSH session ends and after the laptop closes.
 
 Do not use this to drive a remote machine step by step. The handoff is one-shot:
 the remote agent gets a written brief and the repo, and nothing else.
+
+## Before anything else: is `hdev` installed?
+
+Installing this skill does **not** install the CLI it drives. Run this first,
+every session, before promising the user anything:
+
+```bash
+command -v hdev
+```
+
+If that prints a path, skip to the Procedure. If it prints nothing, install it
+now — do not try to work around a missing `hdev`:
+
+```bash
+git clone https://github.com/dennisonbertram/hdev ~/develop/hdev
+```
+
+Then put it on PATH. Try a directory that is already there, so no shell profile
+needs editing:
+
+```bash
+mkdir -p ~/.local/bin && ln -sfn ~/develop/hdev/bin/hdev ~/.local/bin/hdev
+```
+
+That only works if `~/.local/bin` is on PATH. Check, and fall back to the shell
+profile if it is not:
+
+```bash
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) echo "on PATH — done" ;;
+  *) echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+     echo "added to ~/.zshrc — tell the user to open a new terminal" ;;
+esac
+```
+
+Confirm before continuing, in a login shell rather than the current one, because
+the current shell may have a PATH the user's next terminal will not:
+
+```bash
+zsh -lic 'command -v hdev && hdev mode'
+```
+
+If the user runs bash, use `~/.bashrc` and `bash -lic` instead.
+
+Writing to a shell profile is deliberately **not** pre-approved in this
+skill's `allowed-tools`, so the user is asked before it happens. Do not work
+around that prompt, and tell them which file you are editing.
 
 ## Procedure
 
@@ -75,7 +122,8 @@ needs Docker, use `-p docker`. Naming a profile that has not been built fails,
 so list them first.
 
 `submit` returns as soon as the jobs start. Tell the user they can close the
-laptop, and give them the job names.
+laptop, and give them the job names. Then offer to watch the jobs for them —
+see "Watching jobs without babysitting them" below.
 
 ### 4. Talk to the remote agent while it works
 
@@ -112,6 +160,43 @@ A finished job has already pushed its branch and opened a PR. Review the PR,
 do not assume it is correct. `hdev reap` is what stops the VMs from billing —
 say so when reporting that jobs are done.
 
+## Watching jobs without babysitting them
+
+Once jobs are submitted the user should not have to keep asking. Offer a loop:
+
+```
+/loop 10m check my hdev jobs and tell me what changed
+```
+
+Dynamic mode is better when the job length is unknown, because it wakes on the
+event rather than on a timer:
+
+```
+/loop check my hdev jobs and tell me when they finish
+```
+
+**What to do on each tick:**
+
+1. `hdev ps` — every job, its status, its VM age.
+2. For any job whose status changed since the last tick, `hdev status <job>`
+   and summarise what moved.
+3. **Say nothing new when nothing changed.** A tick that reports "still
+   running" for the third time is noise. Report the change, or stay quiet.
+4. When every job has settled: give the PR links, say whether the branches were
+   pushed, and remind the user that `hdev reap` is what stops the billing.
+   Then stop the loop — do not keep ticking over finished work.
+
+**Never call `hdev ask` on a tick.** `ps` and `status` are free: one SSH round
+trip and a file read. `ask` is a model call on the remote box, and it gets
+slower as the job's context grows — measured at 4.6 s early in a job and
+1 minute 1 second late in the same job. Use `ask` when the user actually has a
+question, not on a schedule.
+
+**Interval:** most jobs finish in 2–15 minutes. `10m` is a sensible default and
+`5m` is a reasonable floor. Below that you are paying SSH round trips to learn
+nothing. A `/loop` runs only until the session closes; for anything longer the
+user wants `/schedule`.
+
 ## Failure handling
 
 - `hdev ps` shows `failed` — read `hdev logs <job>`. The VM stays up so the
@@ -141,9 +226,13 @@ longer use rather than accumulating them.
 
 ## Setup checks
 
+If `hdev` itself is not found, see "Before anything else" at the top — the CLI
+is a separate install from this skill.
+
 If `hdev submit` fails immediately:
 
-- `hcloud context active` — needs a Hetzner API token.
+- `hcloud context active` — needs a Hetzner API token. `hcloud context create
+  <name>` prompts for it; never ask the user to paste a token into the chat.
 - `gh auth status` — needs `repo` scope; the remote agent pushes with it.
 - `hdev login status` — shows whether subscription credentials are captured.
   `hdev login` captures them; the remote agents then bill the subscription
