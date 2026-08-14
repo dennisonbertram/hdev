@@ -367,17 +367,29 @@ boot() {
   # Hetzner prices server types it will not actually sell you: a whole
   # generation can be "supported" everywhere and available nowhere. Say which
   # types this location will really create rather than echoing the API error.
-  hcloud server create --name "$name" --type "$TYPE" --location "$LOCATION" \
-    --image "$img" --ssh-key "$KEYNAME" ${FIREWALL:+--firewall "$FIREWALL"} \
-    --label hdev=1 --user-data-from-file <(userdata) >/dev/null || {
-      say "could not create a $TYPE in $LOCATION. Available there right now:"
-      hcloud datacenter list -o noheader -o columns=name 2>/dev/null \
-        | grep "^$LOCATION" | head -1 \
-        | xargs -I{} hcloud datacenter describe {} 2>/dev/null \
-        | awk '/Available: true/ {print "     " $4}' | tr '\n' ' ' >&2
-      echo >&2
-      die "pick one with -t <type> or set HDEV_TYPE"
-    }
+  local err
+  if ! err="$(hcloud server create --name "$name" --type "$TYPE" --location "$LOCATION" \
+      --image "$img" --ssh-key "$KEYNAME" ${FIREWALL:+--firewall "$FIREWALL"} \
+      --label hdev=1 --user-data-from-file <(userdata) 2>&1 >/dev/null)"; then
+    # Show what Hetzner actually said. Guessing at the cause here once produced
+    # a confident, wrong "unsupported server type" message for a quota error.
+    say "could not create $name:"
+    printf '     %s\n' "$err" >&2
+    case "$err" in
+      *limit*|*quota*|*resource_limit*)
+        say "Your project has a server limit and it is full ($(hcloud server list -o noheader -o columns=name | grep -c .) running)."
+        say "Free some with 'hdev reap', or ask Hetzner to raise the project limit."
+        say "Slicing a plan into N slices needs N free servers." ;;
+      *)
+        say "Types this location will actually create right now:"
+        hcloud datacenter list -o noheader -o columns=name 2>/dev/null | grep "^$LOCATION" | head -1 \
+          | xargs -I{} hcloud datacenter describe {} 2>/dev/null \
+          | awk '/Available: true/ {printf "%s ", $5}' >&2
+        echo >&2
+        say "pick one with -t <type> or set HDEV_TYPE" ;;
+    esac
+    die "aborting"
+  fi
   IP="$(hcloud server ip "$name")"
   for _ in $(seq 1 60); do
     rssh "$IP" -o ConnectTimeout=5 \
@@ -563,7 +575,19 @@ cmd_submit() {
   fi
   say "$n slice(s) → $n job(s), agent=$agent, profile=$PROFILE, base=$BASE_REF"
 
-  [ -n "$DRY" ] || { preflight; ensure_key; ensure_firewall; }
+  if [ -z "$DRY" ]; then
+    preflight; ensure_key; ensure_firewall
+    # Slicing needs one free server per slice. Hetzner enforces a per-project
+    # limit and the failure only shows up mid-loop, after some VMs are already
+    # booted and billing. Check before booting anything.
+    local have
+    have="$(hcloud server list -o noheader -o columns=name 2>/dev/null | grep -c . || true)"
+    if [ "${have:-0}" -gt 0 ] && [ "$n" -gt 1 ]; then
+      say "$have server(s) already running; this needs $n more."
+      say "If your project limit is lower than $(( have + n )), later slices will"
+      say "fail after earlier ones are already billing. 'hdev reap' frees space."
+    fi
+  fi
 
   local i title branch job
   # ponytail: boots are sequential; parallelise if you routinely submit >5 slices.

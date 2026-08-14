@@ -249,6 +249,9 @@ aborts rather than proceeding.
 
 ### Limits worth knowing
 
+- **Each slice is a VM, and projects have a server limit** (5 on the project
+  this was built against). A plan with more slices than free servers boots what
+  it can and then fails. `hdev submit` warns first; `hdev reap` frees space.
 - Hetzner allows **30 snapshots across all projects** by default.
 - Snapshot storage is **$0.0199 per GB per month** — the 1.30 GB base profile
   costs about $0.026/month. Cost is not the constraint; the snapshot count is.

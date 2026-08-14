@@ -101,6 +101,13 @@ check "prompt states the cost model"    "context is the expensive thing" "$oc"
 check "prompt explains turns x context" "turns multiplied by"            "$oc"
 check "prompt keeps the small-task exception" "Do not delegate a one-line edit" "$oc"
 check "submit warns on multi-item briefs" "work items" "$(cat "$HDEV")"
+# A quota error was once reported as an "unsupported server type", confidently
+# and wrongly. Show what Hetzner actually said.
+bootblk="$(sed -n '/^boot()/,/^}$/p' "$HDEV")"
+check "boot surfaces the real error"   "could not create \$name"  "$bootblk"
+check "boot names a quota problem"     "server limit and it is full" "$bootblk"
+check "type listing reads the right column" 'printf "%s ", $5'    "$bootblk"
+check "submit warns before booting N"  "later slices will"        "$(cat "$HDEV")"
 check "prompt cites the real measurement" "6,311,012"                    "$oc"
 check "strict mode is available"        "HDEV_STRICT"                    "$(cat "$HDEV")"
 check "strict mode removes edit tools"  "disallowed-tools Edit,Write"    "$(cat "$HDEV")"

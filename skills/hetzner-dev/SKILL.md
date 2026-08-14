@@ -414,6 +414,13 @@ capturing, so a sent `.env` cannot end up baked into a profile image.
 
 Two things drive cost, and only one of them is about delegation.
 
+**0. Slicing is bounded by your Hetzner server limit.** Each slice is a VM, and
+projects have a per-project cap — this one is 5. `hdev submit` warns before
+booting when the count would exceed what is free, but the cap itself is
+Hetzner's. Check `hcloud server list` before submitting a large plan, `hdev reap`
+to free space, or ask Hetzner to raise the limit. A ten-slice plan against a
+five-server project boots five VMs and then fails.
+
 **1. One job per unit of work.** Cost is turns multiplied by context size, and
 context only grows. A measured job here carried ten issues in one brief, ran
 169 turns, and spent 6,311,012 cache-read tokens for 21,529 output tokens. Ten
