@@ -813,7 +813,17 @@ cmd_mode() {
 }
 
 cmd_ssh()  { [ $# -ge 1 ] || die "usage: hdev ssh <job>"; rssh "$(hcloud server ip "$1")"; }
-cmd_nuke() { hcloud server list -l hdev=1 -o noheader -o columns=name | xargs -r hcloud server delete; : > "$JOBS"; }
+# Capture usage before deleting, exactly as reap does — otherwise the record
+# dies with the VM. Any delete path that skips this loses the numbers.
+cmd_nuke() {
+  local n
+  while read -r n; do
+    [ -n "$n" ] || continue
+    usage_row "$n" >> "$USAGE" 2>/dev/null || true
+  done < <(hcloud server list -l hdev=1 -o noheader -o columns=name)
+  hcloud server list -l hdev=1 -o noheader -o columns=name | xargs -r hcloud server delete
+  : > "$JOBS"
+}
 
 case "${1:-}" in
   login)  shift; cmd_login "$@" ;;

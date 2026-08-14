@@ -158,6 +158,10 @@ check "reap spares a waiting job"         "waiting for its usage window" "$(sed 
 reapblk="$(sed -n '/^cmd_reap()/,/^}/p' "$HDEV")"
 countcheck "reap captures usage before deleting" 2 "usage_row" "$reapblk"
 
+# Every path that deletes a VM must capture its usage first, or the record dies
+# with the box. This was found by a cleanup that went around reap.
+check "nuke captures usage too" "usage_row" "$(sed -n '/^cmd_nuke()/,/^}/p' "$HDEV")"
+
 # Firewall rules must be valid JSON built by a real function, not by a
 # multi-line process substitution (bash expands that once per line).
 eval "$(sed -n '/^fw_rules()/p' "$HDEV")"
