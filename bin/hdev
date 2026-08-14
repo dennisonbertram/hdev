@@ -220,6 +220,13 @@ Use three roles:
 - reviewer — reads the diff critically against the brief
 
 Rules:
+- **You are a process. Do not kill processes you did not start.** You run under
+  a systemd unit, and `kill`, `pkill` or `killall` aimed at a pid you did not
+  create will very likely hit your own agent process and end this job with no
+  warning. This has actually happened: an agent investigating what it thought
+  were runaway processes SIGTERMed its own pid and the job died mid-work. If
+  something looks stuck or duplicated, write that in status.md and keep going.
+  Never try to clean up processes.
 - This VM holds only this job and is destroyed when you finish. You have
   passwordless sudo. Install whatever system packages the work needs instead of
   working around a missing dependency.

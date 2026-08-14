@@ -82,6 +82,12 @@ else echo "FAIL a remote agent invocation still runs as root"; fail=1; fi
 check "job user gets passwordless sudo" "NOPASSWD:ALL" "$(sed -n '/^prepare_box()/,/^}/p' "$HDEV")"
 check "sudoers file is validated"       "visudo -cf"   "$(sed -n '/^prepare_box()/,/^}/p' "$HDEV")"
 check "agent is told it has sudo"       "passwordless sudo" "$(orchestrator claude)"
+# A real job died when its agent ran `kill -TERM <own pid>` while hunting what
+# it believed were runaway processes. Every harness needs the warning.
+eval "$(sed -n '/^PI_MODEL=/p' "$HDEV")"
+for a in claude codex pi; do
+  check "$a is warned not to kill processes" "Do not kill processes you did not start" "$(orchestrator $a)"
+done
 
 # Resuming without re-passing --agents silently drops the custom subagent roles.
 askblock="$(sed -n '/^cmd_ask()/,/^}/p' "$HDEV")"
