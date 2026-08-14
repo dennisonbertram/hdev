@@ -122,6 +122,29 @@ hdev reap --max-age 4h # plus runaways and VMs left by a crashed submit
 `hdev ps` marks any VM past `HDEV_MAX_AGE` (default `6h`) with a `!`. Put
 `hdev reap --max-age 6h` in cron as a safety net — see [SETUP.md](SETUP.md).
 
+## Choosing the agent
+
+```bash
+hdev submit plan.md            # Claude Code, on your subscription
+hdev submit -a pi plan.md      # pi harness, DeepSeek V4 Flash via OpenRouter
+hdev submit -a codex plan.md   # Codex
+```
+
+| | Claude Code | pi |
+| --- | --- | --- |
+| Model | your Claude subscription | anything on OpenRouter |
+| Cost | subscription window | ~$0.14/M in, $0.28/M out on DeepSeek V4 Flash |
+| Subagents | real, enforced by `--agents` | none; delegates by invoking itself |
+| Ask a running job | safe — forks the session | refused until the job finishes |
+| Usage limits | shares your 5-hour window | none |
+
+`pi` suits mechanical, well-specified work and does not consume your Claude
+window. Claude suits ambiguous work where a plausible-but-wrong answer is
+expensive. `HDEV_PI_MODEL` takes any OpenRouter model id.
+
+Needs `OPENROUTER_API_KEY`; `hdev` refuses to submit without it rather than
+booting a VM that cannot work.
+
 ## What it cost
 
 ```bash

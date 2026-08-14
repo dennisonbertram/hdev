@@ -20,6 +20,7 @@ JOBS="$STATE/jobs.tsv"
 USAGE="$STATE/usage.tsv"
 AUTHFILE="$STATE/auth.env"
 CODEXAUTH="$STATE/codex-auth.json"
+PIAUTH="$STATE/pi-auth.json"
 MODEFILE="${HDEV_MODE_FILE:-$STATE/mode}"
 # Skills copied from ~/.claude/skills into the job's own skill directory.
 SKILLS="${HDEV_SKILLS:-efficient-fable}"
@@ -29,6 +30,9 @@ SKILLS="${HDEV_SKILLS:-efficient-fable}"
 # enforces it. Nothing on the VM can delete itself — only a Hetzner token can,
 # and the VM deliberately has none.
 MAXAGE="${HDEV_MAX_AGE:-6h}"
+# The pi harness is model-agnostic. Default to DeepSeek V4 Flash over
+# OpenRouter: $0.14/M in, $0.28/M out at the time of writing.
+PI_MODEL="${HDEV_PI_MODEL:-openrouter/deepseek/deepseek-v4-flash}"
 RUSER="${HDEV_USER:-agent}"
 RHOME="/home/$RUSER"
 DRY="${HDEV_DRY_RUN:-}"
@@ -67,6 +71,7 @@ write_files:
       }
       command -v claude >/dev/null || npm i -g @anthropic-ai/claude-code
       command -v codex  >/dev/null || npm i -g @openai/codex
+      command -v pi     >/dev/null || npm i -g @earendil-works/pi-coding-agent
 YAML
   if [ -f "$frag" ]; then
     printf "  - path: /root/profile.sh\n    permissions: '0755'\n    content: |\n"
@@ -196,6 +201,7 @@ orchestrator() {
   case "$1" in
     claude) how="Delegate with the Agent tool. Send independent tasks in a single message so the subagents run in parallel." ;;
     codex)  how="Delegate by running 'codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \"<task>\"' in a shell. Start independent tasks as background jobs and wait for them." ;;
+    pi)     how="Delegate by running 'pi -p --model '"$PI_MODEL"' \"<task>\"' in a shell, one invocation per task. You have no subagent tool, so a subprocess is the delegation. Start independent tasks as background jobs and wait for them." ;;
   esac
   cat <<MD
 # How to work this job
@@ -339,6 +345,7 @@ ship_secrets() {
       echo "export ANTHROPIC_API_KEY=$(printf %q "$ANTHROPIC_API_KEY")"
     fi
     [ -z "${OPENAI_API_KEY:-}" ] || echo "export OPENAI_API_KEY=$(printf %q "$OPENAI_API_KEY")"
+    [ -z "${OPENROUTER_API_KEY:-}" ] || echo "export OPENROUTER_API_KEY=$(printf %q "$OPENROUTER_API_KEY")"
     # Passed through so a job can be pointed at a non-Anthropic endpoint. Unset
     # by default, so this changes nothing until you deliberately set it.
     [ -z "${ANTHROPIC_BASE_URL:-}" ]   || echo "export ANTHROPIC_BASE_URL=$(printf %q "$ANTHROPIC_BASE_URL")"
@@ -348,6 +355,10 @@ ship_secrets() {
 
   # Codex subscription auth is a file, not a token.
   [ ! -f "$CODEXAUTH" ] || rssh "$ip" "umask 077 && mkdir -p $RHOME/.codex && cat > $RHOME/.codex/auth.json" < "$CODEXAUTH"
+  # pi keeps provider credentials in a file, same as codex. It is preferred over
+  # OPENROUTER_API_KEY because pi itself prefers it — a stale env var otherwise
+  # wins locally and fails on the box with a 401.
+  [ ! -f "$PIAUTH" ] || rssh "$ip" "umask 077 && mkdir -p $RHOME/.pi/agent && cat > $RHOME/.pi/agent/auth.json" < "$PIAUTH"
 }
 
 # Create the unprivileged job user. Done per submit rather than baked into the
@@ -420,6 +431,11 @@ cmd_submit() {
   # The brief arrives on stdin, never as a trailing argument: several Claude
   # Code flags are variadic and swallow a positional prompt, and a long slice
   # can exceed the argument limit. Both CLIs read a prompt from stdin.
+  if [ "$agent" = pi ] && [ -z "$DRY" ]; then
+    [ ! -f "$AUTHFILE" ] || . "$AUTHFILE"
+    [ -f "$PIAUTH" ] || [ -n "${OPENROUTER_API_KEY:-}" ] \
+      || die "agent 'pi' needs a credential: run 'hdev login pi' (preferred), or export OPENROUTER_API_KEY"
+  fi
   case "$agent" in
     claude) AGENT_CMD='claude --dangerously-skip-permissions
               --append-system-prompt "$(cat $HOME/job/orchestrator.md)"
@@ -429,7 +445,13 @@ cmd_submit() {
     # the brief tells it to shell out to `codex exec` for isolated sub-tasks.
     codex)  AGENT_CMD='cat $HOME/job/orchestrator.md $HOME/job/task.md |
               codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -' ;;
-    *)      die "agent must be claude or codex" ;;
+    # pi has read/bash/edit/write and no subagent tool, so it delegates by
+    # invoking itself as a subprocess — same shape as codex.
+    pi)     AGENT_CMD='pi -p --model '"$PI_MODEL"'
+              --skill $HOME/.claude/skills/efficient-fable
+              --append-system-prompt "$(cat $HOME/job/orchestrator.md)"
+              < $HOME/job/task.md' ;;
+    *)      die "agent must be claude, codex or pi" ;;
   esac
   AGENT_CMD="$(echo "$AGENT_CMD" | tr '\n' ' ' | tr -s ' ')"
 
@@ -715,6 +737,8 @@ cmd_login() {
 
   case "$target" in
     status)
+      [ -f "$PIAUTH" ]    && echo "pi:     captured $PIAUTH" \
+                          || echo "pi:     not captured (run: hdev login pi)"
       [ -f "$AUTHFILE" ]  && grep -o 'export [A-Z_]*' "$AUTHFILE" | sed 's/export /claude: /' \
                           || echo "claude: not captured (run: hdev login claude)"
       [ -f "$CODEXAUTH" ] && echo "codex:  captured $CODEXAUTH" \
@@ -732,6 +756,23 @@ cmd_login() {
     say "stored in $AUTHFILE — every job now uses your subscription" ;;
   esac
 
+  case "$target" in pi|all)
+    if [ -f "$HOME/.pi/agent/auth.json" ]; then
+      PI_PROVIDER="${PI_MODEL%%/*}"
+      python3 -c "
+import json,sys,os
+src=json.load(open(os.path.expanduser('~/.pi/agent/auth.json')))
+prov=sys.argv[1]
+if prov not in src:
+    sys.exit('pi has no stored credential for provider: '+prov)
+json.dump({prov: src[prov]}, open(sys.argv[2],'w'))
+" "$PI_PROVIDER" "$PIAUTH" && chmod 600 "$PIAUTH" \
+        && say "pi credential for '$PI_PROVIDER' stored in $PIAUTH (that provider only)"
+    else
+      say "no ~/.pi/agent/auth.json — run 'pi' once and sign in, or export OPENROUTER_API_KEY"
+    fi ;;
+  esac
+
   case "$target" in codex|all)
     [ -f "$HOME/.codex/auth.json" ] || codex login
     [ -f "$HOME/.codex/auth.json" ] || die "codex login produced no credentials"
@@ -739,7 +780,7 @@ cmd_login() {
     say "codex credentials stored in $CODEXAUTH" ;;
   esac
 
-  case "$target" in claude|codex|all|status) ;; *) die "usage: hdev login [claude|codex|status] [--on <job>]" ;; esac
+  case "$target" in claude|codex|pi|all|status) ;; *) die "usage: hdev login [claude|codex|pi|status] [--on <job>]" ;; esac
 }
 
 # ── talk to the running orchestrator ──
@@ -762,6 +803,13 @@ cmd_ask() {
       [ -z "$cont" ] || fork=""
       printf '%s' "$q" | rssh "$ip" \
         "su - $RUSER -c '. ~/.hdev-env && cd ~/work && claude --dangerously-skip-permissions --append-system-prompt \"\$(cat ~/job/orchestrator.md)\" --agents \"\$(cat ~/job/agents.json)\" --continue $fork -p'" ;;
+    pi)
+      # pi's --continue appends to the worker's own session, so unlike Claude
+      # there is no safe fork while the job is running.
+      [ "$(job_status "$job")" != running ] \
+        || die "a running pi session cannot be resumed safely — try: hdev status $job"
+      printf '%s' "$q" | rssh "$ip" \
+        "su - $RUSER -c '. ~/.hdev-env && cd ~/work && pi -p --continue --model $PI_MODEL'" ;;
     codex)
       [ "$(job_status "$job")" != running ] \
         || die "a running codex session cannot be resumed — try: hdev logs $job"
@@ -869,9 +917,9 @@ case "${1:-}" in
   *) cat >&2 <<USAGE
 hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
 
-  hdev login                         capture subscription auth (once)
+  hdev login [claude|codex|pi]       capture agent credentials (once)
   hdev login <claude|codex> --on <job>   log in on the VM instead
-  hdev submit [-a claude|codex] [-p profile] [-e .env.local] [-t type]
+  hdev submit [-a claude|codex|pi] [-p profile] [-e .env.local] [-t type]
               [-b prefix] [-1] <plan.md>
   hdev submit -m "<one task>"        skip the plan file
   hdev ps                            status of every job

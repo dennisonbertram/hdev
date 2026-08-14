@@ -187,6 +187,26 @@ check "skill builds a profile first run" "First run in a project"  "$sk"
 check "skill reads CI for dependencies"  "CI workflow"             "$sk"
 check "skill warns base has no browser"  "no browser"              "$sk"
 
+# The pi harness: a third agent on a model-agnostic backend.
+out="$("$HDEV" submit -a pi -m "test" 2>&1)"
+check "pi uses the configured model"  "openrouter/deepseek/deepseek-v4-flash" "$out"
+check "pi loads the shipped skill"    "--skill \$HOME/.claude/skills/efficient-fable" "$out"
+check "pi takes the brief on stdin"   "< \$HOME/job/task.md"     "$out"
+out="$(HDEV_PI_MODEL=openrouter/anthropic/claude-sonnet-4 "$HDEV" submit -a pi -m t 2>&1)"
+check "pi model is overridable"       "openrouter/anthropic/claude-sonnet-4" "$out"
+check "three agents are offered"      "claude, codex or pi" "$("$HDEV" submit -a bogus -m t 2>&1)"
+eval "$(sed -n '/^PI_MODEL=/p;/^orchestrator()/,/^}$/p' "$HDEV")"
+check "pi is told it has no subagent tool" "no subagent tool" "$(orchestrator pi)"
+check "pi delegates via subprocess"        "pi -p --model"    "$(orchestrator pi)"
+check "openrouter key is shipped"     "OPENROUTER_API_KEY" "$(sed -n '/^ship_secrets()/,/^}/p' "$HDEV")"
+check "pi is installed on the box"    "pi-coding-agent"    "$(sed -n '/^userdata()/,/^}$/p' "$HDEV")"
+# pi prefers its own auth.json over the env var, so a stale env var wins locally
+# and 401s on the box. Capture the real credential, and only for one provider.
+whole="$(cat "$HDEV")"
+check "login captures pi credentials"  "PIAUTH"             "$whole"
+check "only one provider is shipped"   "that provider only" "$whole"
+check "pi auth is shipped to the box"  ".pi/agent/auth.json" "$(sed -n '/^ship_secrets()/,/^}/p' "$HDEV")"
+
 # Firewall rules must be valid JSON built by a real function, not by a
 # multi-line process substitution (bash expands that once per line).
 eval "$(sed -n '/^fw_rules()/p' "$HDEV")"
@@ -209,7 +229,7 @@ check "mode defaults to local" "local"             "$("$HDEV" mode 2>&1)"
 check "mode persists"          "hetzner"           "$("$HDEV" mode 2>&1)"
 check "bad mode rejected"      "usage: hdev mode"  "$("$HDEV" mode sideways 2>&1)"
 
-check "bad agent rejected"   "must be claude or codex" "$("$HDEV" submit -a bogus -m hi 2>&1)"
+check "bad agent rejected"   "must be claude, codex or pi" "$("$HDEV" submit -a bogus -m hi 2>&1)"
 check "empty submit rejected" "usage: hdev submit"     "$("$HDEV" submit 2>&1)"
 check "bad flag rejected"     "unknown flag"           "$("$HDEV" submit --nope -m hi 2>&1)"
 check "missing plan rejected" "plan file not found"    "$("$HDEV" submit /no/such/plan.md 2>&1)"

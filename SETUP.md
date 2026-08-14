@@ -73,9 +73,15 @@ Hetzner project. Set `HDEV_SSH_KEY` to use one you already have.
 ## 4. Put your subscription on the box
 
 ```bash
-hdev login          # runs `claude setup-token`, opens your browser
-hdev login status   # confirm it landed
+hdev login          # Claude: runs `claude setup-token`, opens your browser
+hdev login pi       # pi: captures your OpenRouter credential (optional)
+hdev login status   # confirm what landed
 ```
+
+`hdev login pi` reads `~/.pi/agent/auth.json` and copies **only** the provider
+your model uses — not every key you have configured. Prefer it over
+`OPENROUTER_API_KEY`: `pi` itself prefers the stored file, so a stale env var
+can work locally and 401 on the VM.
 
 `claude setup-token` mints a **one-year OAuth token** that requires a
 subscription and works on any machine, so this is a one-time step — every

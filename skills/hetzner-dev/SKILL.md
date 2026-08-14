@@ -222,6 +222,46 @@ A finished job has already pushed its branch and opened a PR. Review the PR,
 do not assume it is correct. `hdev reap` is what stops the VMs from billing —
 say so when reporting that jobs are done.
 
+## Choosing the agent
+
+Three harnesses. Pick per job, and say why you picked it.
+
+```bash
+hdev submit -b epic1 plan.md            # Claude Code (default)
+hdev submit -a pi -b epic1 plan.md      # pi harness, DeepSeek V4 Flash
+hdev submit -a codex -b epic1 plan.md   # Codex
+```
+
+| | Claude Code | pi |
+| --- | --- | --- |
+| Model | your Claude subscription | any, via OpenRouter — default DeepSeek V4 Flash |
+| Cost | subscription window | metered, roughly $0.14/M in and $0.28/M out |
+| Subagents | real, enforced by `--agents` | none — it delegates by invoking itself |
+| Ask a running job | safe, forks the session | not safe; `hdev ask` refuses until it finishes |
+| Usage limits | shares your 5-hour window | none |
+
+**Use `pi` when** the work is mechanical and well-specified — a scripted
+migration, a rename across many files, adding tests to existing code, a
+repetitive fix. Also use it when your Claude session window is nearly spent and
+the work can wait no longer, since pi does not touch that window at all.
+
+**Use Claude when** the job needs judgement: ambiguous briefs, architecture,
+anything where a wrong-but-plausible answer is expensive. Its enforced
+subagents and safe mid-run questioning matter most exactly there.
+
+**Say which you chose and why.** "This is a mechanical rename across 40 files,
+so I sent it to pi on DeepSeek — it will not touch your Claude window" is the
+kind of sentence the user wants.
+
+Override the model with `HDEV_PI_MODEL`, which takes any OpenRouter id:
+
+```bash
+HDEV_PI_MODEL=openrouter/qwen/qwen3-coder hdev submit -a pi plan.md
+```
+
+`pi` needs `OPENROUTER_API_KEY`. `hdev` refuses to submit without it rather
+than booting a VM that cannot work.
+
 ## Watching jobs without babysitting them
 
 Once jobs are submitted the user should not have to keep asking. Offer a loop:
