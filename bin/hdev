@@ -581,11 +581,12 @@ cmd_submit() {
     # limit and the failure only shows up mid-loop, after some VMs are already
     # booted and billing. Check before booting anything.
     local have
-    have="$(hcloud server list -o noheader -o columns=name 2>/dev/null | grep -c . || true)"
-    if [ "${have:-0}" -gt 0 ] && [ "$n" -gt 1 ]; then
-      say "$have server(s) already running; this needs $n more."
-      say "If your project limit is lower than $(( have + n )), later slices will"
-      say "fail after earlier ones are already billing. 'hdev reap' frees space."
+    have="$(hcloud server list -l hdev=1 -o noheader -o columns=name 2>/dev/null | grep -c . || true)"
+    have="${have:-0}"
+    say "hdev VMs already running: $have. This adds $n."
+    if [ "$have" -gt 0 ] && [ "$n" -gt 1 ]; then
+      say "Hetzner caps servers per project. If the cap is under $(( have + n )),"
+      say "later slices fail after earlier ones are already billing — 'hdev reap' frees space."
     fi
   fi
 

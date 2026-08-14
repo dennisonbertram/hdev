@@ -129,6 +129,11 @@ wrote. Reap last, once the PR is reviewed and nothing is outstanding.
 
 ## Making the orchestrator actually delegate
 
+Measured, not assumed: slicing four small helpers into separate jobs cost **1.5x
+more** cache-reads per item than one brief, because each slice repays the cost of
+reading the repo. Slice for parallelism, independent review, and to stop one
+piece bloating a shared context — not on principle.
+
 The remote agent is told to delegate to `implementer`, `tester` and `reviewer`.
 It does not always listen. One measured job loaded the skill, referenced it 95
 times, and still made zero delegations — burning **6,311,012 cache-read tokens

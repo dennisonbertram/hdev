@@ -421,12 +421,27 @@ Hetzner's. Check `hcloud server list` before submitting a large plan, `hdev reap
 to free space, or ask Hetzner to raise the limit. A ten-slice plan against a
 five-server project boots five VMs and then fails.
 
-**1. One job per unit of work.** Cost is turns multiplied by context size, and
-context only grows. A measured job here carried ten issues in one brief, ran
-169 turns, and spent 6,311,012 cache-read tokens for 21,529 output tokens. Ten
-slices would have been ten small contexts running in parallel — cheaper and
-faster. `hdev submit` warns when a single brief looks like several work items.
-Slice by issue unless the pieces genuinely cannot be separated.
+**1. Slice by shippable unit, not by issue count.** This was measured, and the
+obvious answer was wrong. Four small helpers in one brief versus three of the
+same helpers as separate slices:
+
+| | items | cache-reads | per item | turns/item |
+| --- | --- | --- | --- | --- |
+| one brief | 4 | 1,543,023 | 385,755 | 14.0 |
+| separate slices | 3 | 1,745,459 | 581,819 | 25.7 |
+
+Slicing cost **1.5x more** per item. Every slice repays a fixed startup — clone,
+read the repo, load the skill, learn the conventions — and for small items that
+overhead beats the context saving.
+
+So slice when a piece is **big enough to bloat a shared context on its own**, or
+when you want it reviewed and merged independently, or when wall-clock matters
+because slices run in parallel. Batch small related items into one job. A ten
+issue epic is not automatically ten slices; three coherent areas may be three.
+
+The failure the slicing advice exists to prevent is the other extreme: one brief
+with ten issues that ran 169 turns against a 1 MB context for 6.3M cache-reads.
+Judge by how big each piece's context will get, not by counting issues.
 
 **2. The workers are already cheap; leave them that way.** `hdev` defines four
 subagents and sets their models: `implementer`, `tester` and `researcher` run on
