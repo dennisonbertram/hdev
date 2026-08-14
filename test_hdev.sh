@@ -386,5 +386,38 @@ check "empty submit rejected" "usage: hdev submit"     "$("$HDEV" submit 2>&1)"
 check "bad flag rejected"     "unknown flag"           "$("$HDEV" submit --nope -m hi 2>&1)"
 check "missing plan rejected" "plan file not found"    "$("$HDEV" submit /no/such/plan.md 2>&1)"
 
+# ── the session hook ──
+# A hook that silently does nothing is worse than no hook, so check that it
+# speaks when there are VMs, and that it never deletes a running job itself.
+HOOK="$(cd "$(dirname "$0")" && pwd)/skills/hetzner-dev/hooks/session.sh"
+[ -x "$HOOK" ] && echo "ok   session hook is executable" \
+               || { echo "FAIL session hook is missing or not executable"; fail=1; }
+
+hookdir="$(mktemp -d)"
+out="$(PATH="$(dirname "$HDEV"):$PATH" HDEV_STATE_DIR="$hookdir" bash "$HOOK" start 2>&1)"
+[ -z "$out" ] && echo "ok   hook is silent with no jobs" \
+              || { echo "FAIL hook spoke with no jobs: $out"; fail=1; }
+
+printf 'hdev-a\tfeat/a\towner/repo\tclaude\tmain\t1\nhdev-b\tfeat/b\towner/repo\tpi\tmain\t2\n' > "$hookdir/jobs.tsv"
+out="$(PATH="$(dirname "$HDEV"):$PATH" HDEV_STATE_DIR="$hookdir" bash "$HOOK" start 2>&1)"
+if printf '%s' "$out" | jq -e '.systemMessage|test("hdev-a")and test("hdev-b")' >/dev/null 2>&1
+then echo "ok   hook names the VMs still up"
+else echo "FAIL hook did not report live VMs as JSON: $out"; fail=1; fi
+check "hook counts the VMs" '2 VM(s)' "$out"
+
+# `start` reports; only `end` reaps. Reaping is what deletes, and it is the one
+# command that knows a running job must be kept.
+[ "$(wc -l < "$hookdir/jobs.tsv" | tr -d ' ')" = 2 ] \
+  && echo "ok   start deletes nothing" \
+  || { echo "FAIL start changed the job list"; fail=1; }
+case "$(cat "$HOOK")" in
+  *"server delete"*) echo "FAIL hook deletes servers itself instead of via reap"; fail=1 ;;
+  *) echo "ok   hook deletes only through hdev reap" ;;
+esac
+rm -rf "$hookdir"
+
+# The skill has to tell the agent the hook exists, or nobody installs it.
+check "skill documents the hook" "hooks/session.sh" "$(cat "$(dirname "$0")/skills/hetzner-dev/SKILL.md")"
+
 rm -rf "$HDEV_STATE_DIR"
 exit $fail

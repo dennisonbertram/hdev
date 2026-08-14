@@ -445,6 +445,54 @@ four cents an hour.
 **Stop the loop** once every job is reaped. A loop ticking over an empty job
 list is pure noise.
 
+## The backstop: reap when the session ends
+
+The watch loop stops when the session closes. The VMs do not. Install a hook so
+that the last thing a session does is reap.
+
+`hooks/session.sh` ships with this skill. Offer to install it the first time you
+submit a job for a user, and add it to `~/.claude/settings.json`:
+
+```json
+"SessionEnd": [
+  { "matcher": "*", "hooks": [
+    { "type": "command", "timeout": 90,
+      "command": "bash '~/.claude/skills/hetzner-dev/hooks/session.sh' end" } ] }
+],
+"SessionStart": [
+  { "matcher": "*", "hooks": [
+    { "type": "command", "timeout": 15,
+      "command": "bash '~/.claude/skills/hetzner-dev/hooks/session.sh' start" } ] }
+]
+```
+
+Write the full path — `settings.json` does not expand `~`. **Merge with the
+hooks that are already there.** A user usually has some. Replacing the array
+deletes them.
+
+**The hook does not kill a running job. That is deliberate.** A job is meant to
+outlive the session — that is the point of `hdev`. `hdev reap` deletes the VM of
+every job that finished, failed or vanished, and keeps every job that runs. The
+hook adds no rule of its own.
+
+Two events, because they do different work:
+
+| Event | What it does | Why |
+| --- | --- | --- |
+| `SessionEnd` | Reaps, then reports what is left | The last chance to stop the billing |
+| `SessionStart` | Reports only | A VM that survived the last session is invisible until something says so |
+
+`SessionEnd` has no terminal left to print to, so the reap output goes to
+`~/.config/hdev/last-reap.log`. Read that file when you want to know what the
+hook deleted.
+
+The hook exits immediately, and prints nothing, when `hdev` is absent or no job
+is tracked. Measured at 0.32 s with no jobs.
+
+**A hook is a backstop, not the plan.** It runs when the user closes the
+session, which can be hours after a job finished. Reap in the watch loop as
+soon as the work is reviewed. Let the hook catch only what you missed.
+
 ## Interval guidance
 
 Once jobs are submitted the user should not have to keep asking. For reference:

@@ -134,6 +134,17 @@ wrote. Reap last, once the PR is reviewed and nothing is outstanding.
 `hdev ps` marks any VM past `HDEV_MAX_AGE` (default `6h`) with a `!`. Put
 `hdev reap --max-age 6h` in cron as a safety net — see [SETUP.md](SETUP.md).
 
+### Reaping when the session ends
+
+Forgetting to reap is what costs money. `skills/hetzner-dev/hooks/session.sh`
+runs `hdev reap` as the session closes, and reports on the next session start
+what is still up. See [SETUP.md](SETUP.md) for the `settings.json` entries.
+
+**It never kills a running job.** A job is meant to outlive the session — that
+is the point. The hook only calls `hdev reap`, which keeps every job that runs
+and deletes the VM of every job that finished. It exits silently, in 0.32 s
+measured, when no job is tracked.
+
 ## Delegating to cheap agents
 
 The remote orchestrator decides; its subagents do the work, on a cheaper model.

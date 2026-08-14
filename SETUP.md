@@ -169,6 +169,38 @@ echo '0 * * * * PATH=/usr/local/bin:/opt/homebrew/bin:$PATH '"$PWD"'/bin/hdev re
 Pick a max age longer than your longest real job. `--max-age` cannot tell a
 runaway from slow honest work; it only knows the clock.
 
+### Reap when a Claude Code session ends
+
+Cron is one safety net. A session hook is the other, and it fires at the moment
+you are most likely to forget. Add both blocks to `~/.claude/settings.json`,
+with the full path — the file does not expand `~`:
+
+```json
+"SessionEnd": [
+  { "matcher": "*", "hooks": [
+    { "type": "command", "timeout": 90,
+      "command": "bash '/Users/you/.claude/skills/hetzner-dev/hooks/session.sh' end" } ] }
+],
+"SessionStart": [
+  { "matcher": "*", "hooks": [
+    { "type": "command", "timeout": 15,
+      "command": "bash '/Users/you/.claude/skills/hetzner-dev/hooks/session.sh' start" } ] }
+]
+```
+
+**Merge these with the hooks you already have.** Replacing the arrays deletes
+them. Check the result with `jq . ~/.claude/settings.json` — a malformed
+`settings.json` disables every setting in the file, not only the hooks.
+
+| Event | What runs | Effect |
+| --- | --- | --- |
+| `SessionEnd` | `hdev reap` | Deletes the VM of every finished job. Keeps every running job |
+| `SessionStart` | report only | Names any VM that survived the last session |
+
+The end hook has no terminal to print to, so its output goes to
+`~/.config/hdev/last-reap.log`. Both hooks exit silently when `hdev` is not
+installed or no job is tracked.
+
 ## When it does not work
 
 | Symptom | Cause |
