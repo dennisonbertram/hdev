@@ -298,6 +298,9 @@ check "skill keeps finished jobs alive"  "still a collaborator"     "$sk"
 check "skill reaps last, not first"      "Reap last, not first"     "$sk"
 check "skill warns -c can be acted on"   "for the work, not for the machine" "$sk"
 check "skill defines idle enough"        "idle enough"              "$sk"
+# A submitted job with nobody watching bills until someone remembers.
+check "skill starts a loop on submit"    "every time, in the same message" "$sk"
+check "skill says nothing else reaps"    "nothing else deletes these VMs"  "$sk"
 # ps must expose idle so a loop can judge when a job is safe to close out.
 psblk="$(sed -n '/^cmd_ps()/,/^}$/p' "$HDEV")"
 check "ps has an idle column"            "IDLE"                     "$psblk"

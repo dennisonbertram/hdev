@@ -250,8 +250,33 @@ needs Docker, use `-p docker`. Naming a profile that has not been built fails,
 so list them first.
 
 `submit` returns as soon as the jobs start. Tell the user they can close the
-laptop, and give them the job names. Then offer to watch the jobs for them —
-see "Watching jobs without babysitting them" below.
+laptop, and give them the job names.
+
+### Then start the watch loop — every time, in the same message
+
+**A submitted job with nobody watching it is a VM that bills until somebody
+remembers.** So do not stop at "here are the job names". Start the loop as part
+of the same response:
+
+```
+/loop 10m check my hdev jobs, review anything new, and close out what is done
+```
+
+Say you have started it, at what interval, and that it stops on its own once
+every job is reaped. If the user does not want it, they will say so — but the
+default is that a submit is always followed by a watch.
+
+Use dynamic mode when the job length is unknown, because it wakes on the event
+rather than on a timer:
+
+```
+/loop check my hdev jobs and tell me when they finish
+```
+
+The tick procedure is in "Watching jobs and closing them out" below. The
+important part is that **nothing else deletes these VMs.** There is no
+server-side timeout and no auto-reap. If the loop is not running and the user
+walks away, the VM runs until someone notices.
 
 ### 4. Talk to the remote agent while it works
 

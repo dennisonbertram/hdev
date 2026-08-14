@@ -107,6 +107,13 @@ hdev submit -1 plan.md          # whole file as one job
 hdev submit -m "raise the upstream timeout to 30s"
 ```
 
+`submit` returns immediately. **Start a watch loop in the same breath** — a VM
+runs until something deletes it, and nothing does that on its own:
+
+```
+/loop 10m check my hdev jobs, review anything new, and close out what is done
+```
+
 Then close the laptop. Later:
 
 ```bash
