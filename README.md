@@ -159,6 +159,10 @@ not a bill.
 A job's usage record lives on its VM, so `reap` captures it before deleting and
 `hdev usage` still shows reaped jobs.
 
+**This does not cover `pi` jobs** — it reads Claude Code's transcript format,
+which pi does not write, so a pi job shows `-`. That is missing data, not zero.
+Read the OpenRouter dashboard for pi spend.
+
 ## When a job hits the usage limit
 
 | Limit | What the job does |

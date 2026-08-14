@@ -354,6 +354,11 @@ A job's usage record lives on its VM, so `hdev reap` would destroy it. `reap`
 captures the figure before deleting, into `~/.config/hdev/usage.tsv`, and
 `hdev usage` shows those reaped jobs too.
 
+**`hdev usage` does not cover `pi` jobs.** It reads Claude Code's transcript
+format, which `pi` does not write, so a pi job shows `-` rather than a number.
+That is missing data, not a zero — never report a pi job as having cost
+nothing. For pi spend, read the OpenRouter dashboard.
+
 ## When a job hits the usage limit
 
 Claude Code emits three different limit messages and they need different

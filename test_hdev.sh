@@ -186,6 +186,7 @@ check "skill forbids printing secrets"   "Never print the contents" "$sk"
 check "skill builds a profile first run" "First run in a project"  "$sk"
 check "skill reads CI for dependencies"  "CI workflow"             "$sk"
 check "skill warns base has no browser"  "no browser"              "$sk"
+check "skill flags the pi usage gap"     "does not cover \`pi\` jobs" "$sk"
 
 # The pi harness: a third agent on a model-agnostic backend.
 out="$("$HDEV" submit -a pi -m "test" 2>&1)"
