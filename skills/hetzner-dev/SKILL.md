@@ -65,6 +65,52 @@ Writing to a shell profile is deliberately **not** pre-approved in this
 skill's `allowed-tools`, so the user is asked before it happens. Do not work
 around that prompt, and tell them which file you are editing.
 
+## First run in a project: build it a profile
+
+The base image has node, git, gh and the agents. It has **no browser, no Docker,
+no Python, no Bun**. A job needing those will report itself blocked, and the
+user finds out after waiting rather than before.
+
+So the first time this skill is used in a repository, spend two minutes getting
+the environment right. Do this once per project, not once per job.
+
+**1. Read what the project actually needs.** Look, do not assume:
+
+| Look at | What it tells you |
+| --- | --- |
+| `package.json` scripts, lockfile name | npm / pnpm / yarn / bun |
+| `playwright.config.*`, `cypress.config.*`, `@playwright/test` | needs a browser |
+| `Dockerfile`, `docker-compose.yml`, testcontainers | needs Docker |
+| `pyproject.toml`, `requirements.txt`, `Gemfile`, `go.mod`, `Cargo.toml` | another toolchain |
+| CI workflow `runs-on` and setup steps | the real answer — CI already lists the dependencies |
+
+The CI workflow is the most reliable source. It is the list someone already had
+to get right.
+
+**2. Check what profiles exist.** `hdev images`. If one already covers it, use
+it with `-p` and stop here.
+
+**3. Otherwise build one.** For a browser or Docker, the shipped profiles cover
+it. For anything else, let a job install it and capture the result:
+
+```bash
+hdev submit -k -b setup -m "Install <exact toolchain> so this project's test
+suite runs. Then run the suite and report the command and the pass/fail counts.
+Change no repository files."
+hdev snapshot <job> <project-name>     # once it reports success
+hdev submit -p <project-name> plan.md  # every later job starts there
+```
+
+`-k` keeps the VM so it can be captured. `hdev snapshot` scrubs credentials and
+the work tree first, and refuses while the job is still running.
+
+**4. Tell the user what you built and what it does not cover.** Name the
+profile and say which of their suites still cannot run on it.
+
+Do not skip to submitting real work on the base image and then report a pile of
+"could not verify" results. Getting the environment right first is cheaper than
+a job that runs for ten minutes and verifies nothing.
+
 ## Procedure
 
 ### 1. Plan on this machine
@@ -113,8 +159,24 @@ hdev submit -1 plan.md              # whole file as one job
 hdev submit -m "raise the upstream timeout to 30s"   # no plan file
 ```
 
-Flags: `-b <prefix>` to prefix branch names, `-t cpx32` for a bigger VM,
-`-p <profile>` to boot from a snapshot that already has the toolchain.
+### Always name the job
+
+**Pass `-b <short-name>` on every submit.** Without it, jobs are named from the
+first words of the task and become unreadable — `hdev-agent-0814-1357-add-src-t`
+tells you nothing when four are running. The name flows into the job name, the
+branch and the PR.
+
+```bash
+hdev submit -b epic473 plan.md      # → hdev-epic473-…, branch epic473/…
+```
+
+Use whatever the user already calls the work: a ticket id, an epic number, a
+feature name. Short, lowercase, no spaces. When you submit several slices at
+once give them one shared prefix so they read as a set. Tell the user the names
+you chose — they need them for `hdev status`, `hdev ask` and `hdev logs`.
+
+Other flags: `-t cpx32` for a bigger VM, `-p <profile>` to boot from a snapshot
+that already has the toolchain, `-e <file>` to send an untracked file.
 
 Check `hdev images` before submitting. If the work needs a browser, submit with
 `-p browser` rather than letting the agent install Chromium on every job. If it
@@ -212,11 +274,22 @@ hdev submit -e .env.local -e .env.test plan.md
 Paths are relative to the repo root, the flag repeats, and the files land in
 the work tree after the clone.
 
-**Ask the user before sending anything.** These files usually hold real
-credentials — database passwords, payment keys, production tokens — and the VM
-runs an agent with permissions fully open and a live network. Name the exact
-files you propose to send and why the suite needs them, then wait for a yes.
-Never infer `-e .env` because a test failed.
+**Sending is deliberate, never inferred. Ask every time.**
+
+1. Name the exact files, one per line, and say which suite needs each one.
+2. Say what is in them if you know — "this holds your Stripe test key".
+3. Wait for an explicit yes. A previous yes does not carry to the next submit.
+4. Never add `-e` because a test failed. Never guess at `.env` from a filename.
+5. Never print the contents of these files, to the user or into a brief.
+
+These usually hold real credentials — database passwords, payment keys,
+production tokens — and the VM runs an agent with permissions fully open and a
+live network.
+
+On the VM, every sent file is added to `.git/info/exclude` along with `.env`,
+`.env.*`, `*.pem` and `*.key`. That is per-clone and never committed, so a sent
+secret cannot be staged by `git add -A` and end up in the PR — even if the
+repository's own `.gitignore` does not cover it.
 
 If the user declines, that is a fine outcome: tell the agent in the brief which
 suites it cannot run, and have it report them as unverified rather than

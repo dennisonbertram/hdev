@@ -102,7 +102,13 @@ git checkout -b "$BRANCH"
 # Untracked files the user chose to send, unpacked over the clone.
 if [ -f "$HOME/job/envfiles.tgz" ]; then
   tar -xzf "$HOME/job/envfiles.tgz" -C "$HOME/work"
-  echo "hdev: restored untracked files: $(tar -tzf "$HOME/job/envfiles.tgz" | tr '\n' ' ')"
+  # Ignore them in THIS clone regardless of what the repo's .gitignore says.
+  # .git/info/exclude is per-clone and never committed, so a sent secret can
+  # never be staged by `git add -A` and end up in the PR. Belt and braces:
+  # the repo may not ignore the file, and the agent may add one of its own.
+  tar -tzf "$HOME/job/envfiles.tgz" | sed 's|^\./||' >> "$HOME/work/.git/info/exclude"
+  printf '%s\n' '.env' '.env.*' '*.pem' '*.key' '._*' >> "$HOME/work/.git/info/exclude"
+  echo "hdev: restored and git-excluded: $(tar -tzf "$HOME/job/envfiles.tgz" | tr '\n' ' ')"
 fi
 
 OUT="$HOME/job/agent.out"
@@ -470,7 +476,7 @@ cmd_submit() {
     # Untracked files the clone will not contain — .env and friends. Explicit
     # only: never inferred, because these usually hold real credentials.
     if [ ${#envfiles[@]} -gt 0 ]; then
-      tar -czf - -C "$(git rev-parse --show-toplevel)" "${envfiles[@]}" \
+      COPYFILE_DISABLE=1 tar -czf - -C "$(git rev-parse --show-toplevel)" "${envfiles[@]}" \
         | rssh "$IP" "umask 077 && cat > $RHOME/job/envfiles.tgz"
       say "sent to the VM: ${envfiles[*]}"
     fi

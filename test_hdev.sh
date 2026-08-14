@@ -165,10 +165,27 @@ check "nuke captures usage too" "usage_row" "$(sed -n '/^cmd_nuke()/,/^}/p' "$HD
 # Untracked files (.env) must be explicit, validated early, and unpacked on the box.
 check "--env rejects a missing file" "--env file not found" "$("$HDEV" submit -e /no/such/.env -m hi 2>&1)"
 check "runner unpacks sent files"    "envfiles.tgz"         "$(cat "$HDEV_STATE_DIR/runner.sh")"
-check "runner says what it restored" "restored untracked files" "$(cat "$HDEV_STATE_DIR/runner.sh")"
+check "runner says what it restored" "restored and git-excluded" "$(cat "$HDEV_STATE_DIR/runner.sh")"
+# A sent secret must never be committable, whatever the repo's .gitignore says.
+rnr="$(cat "$HDEV_STATE_DIR/runner.sh")"
+check "sent files are git-excluded on the box" ".git/info/exclude" "$rnr"
+check "env patterns excluded as a backstop"    "'.env.*'"          "$rnr"
+check "key material excluded too"              "'*.pem'"           "$rnr"
 subblk="$(sed -n '/^cmd_submit()/,/^}/p' "$HDEV")"
 check "sending is announced"         "sent to the VM"       "$subblk"
+# macOS tar writes ._ AppleDouble sidecars; .env.local is gitignored but
+# ._.env.local is not, so git add -A on the box would commit it into the PR.
+check "no AppleDouble sidecars sent"  "COPYFILE_DISABLE=1"   "$subblk"
 countcheck "env files are never inferred" 0 'envfiles+=.*\.env' "$subblk"
+
+# The skill must cover the things a real run tripped over.
+sk="$(cat "$(dirname "$HDEV")/../skills/hetzner-dev/SKILL.md")"
+check "skill requires naming jobs"       "Always name the job"     "$sk"
+check "skill asks before sending env"    "never inferred"          "$sk"
+check "skill forbids printing secrets"   "Never print the contents" "$sk"
+check "skill builds a profile first run" "First run in a project"  "$sk"
+check "skill reads CI for dependencies"  "CI workflow"             "$sk"
+check "skill warns base has no browser"  "no browser"              "$sk"
 
 # Firewall rules must be valid JSON built by a real function, not by a
 # multi-line process substitution (bash expands that once per line).
