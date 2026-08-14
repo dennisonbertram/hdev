@@ -267,6 +267,11 @@ check "claude-pi gets the subagents"    "agents.json" "$("$HDEV" submit -a claud
 ocp="$(orchestrator claude-pi)"
 check "claude-pi delegates code to pi"  "pi -p --model"          "$ocp"
 check "claude-pi reserves subagents"    "never for writing code" "$ocp"
+# Code shipped without docs once already; assert every harness is documented.
+for h in claude-pi pi codex; do
+  check "skill documents $h"  "$h" "$sk"
+  check "readme documents $h" "$h" "$(cat "$(dirname "$HDEV")/../README.md")"
+done
 countcheck "claude-pi prompt is not mangled" 0 "the slice>. " "$ocp"
 # pi on an anthropic model authenticates with the Claude subscription token.
 ss="$(sed -n '/^ship_secrets()/,/^}/p' "$HDEV")"

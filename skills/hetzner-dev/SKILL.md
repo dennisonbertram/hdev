@@ -290,46 +290,46 @@ say so when reporting that jobs are done.
 
 ## Choosing the agent
 
-Three harnesses. Pick per job, and say why you picked it.
+Four harnesses. Pick per job and say why.
 
 ```bash
-hdev submit -b epic1 plan.md            # Claude Code (default)
-hdev submit -a pi -b epic1 plan.md      # pi harness, DeepSeek V4 Flash
-hdev submit -a codex -b epic1 plan.md   # Codex
+hdev submit -b epic1 plan.md               # Claude Code (default)
+hdev submit -a claude-pi -b epic1 plan.md  # Claude plans and reviews, pi writes
+hdev submit -a pi -b epic1 plan.md         # pi alone
+hdev submit -a codex -b epic1 plan.md      # Codex
 ```
 
-| | Claude Code | pi |
-| --- | --- | --- |
-| Model | your Claude subscription | any, via OpenRouter — default DeepSeek V4 Flash |
-| Cost | subscription window | metered, roughly $0.14/M in and $0.28/M out |
-| Subagents | real, enforced by `--agents` | none — it delegates by invoking itself |
-| Ask a running job | safe, forks the session | not safe; `hdev ask` refuses until it finishes |
-| Usage limits | shares your 5-hour window | none |
+`hdev agent <name>` saves a default so it need not be typed each time.
 
-**Use `pi` when** the work is mechanical and well-specified — a scripted
-migration, a rename across many files, adding tests to existing code, a
-repetitive fix. Also use it when your Claude session window is nearly spent and
-the work can wait no longer, since pi does not touch that window at all.
+| | Claude | claude-pi | pi |
+| --- | --- | --- | --- |
+| Plans and reviews | Claude | Claude | the cheap model |
+| Writes the code | Claude subagents | **pi** | pi |
+| Subagents | real, enforced | research/review only | none |
+| Ask a running job | safe, forks | safe, forks | refused until done |
+| Usage window | consumes it | consumes it (planning only) | none, unless on an anthropic model |
 
-**Use Claude when** the job needs judgement: ambiguous briefs, architecture,
-anything where a wrong-but-plausible answer is expensive. Its enforced
-subagents and safe mid-run questioning matter most exactly there.
+**`claude-pi` is the interesting one.** It is the `fast-efficient` split running
+remotely: the frontier model does the judgement, a cheap fast model does the
+typing, and the frontier model verifies. Measured on a real job — three helpers
+with tests — it made **11 pi invocations and 1 subagent call**, and produced
+10 of 10 passing tests in **two minutes**.
 
-**Say which you chose and why.** "This is a mechanical rename across 40 files,
-so I sent it to pi on DeepSeek — it will not touch your Claude window" is the
-kind of sentence the user wants.
+Use it when the work is well-specified enough to hand over but you still want
+real review. Use plain **Claude** when the brief is ambiguous and a
+plausible-but-wrong answer is expensive. Use plain **pi** for mechanical work
+where you do not need the frontier model at all.
 
-Which model pi uses is a saved setting, not a flag to remember:
+### pi on your Claude subscription
 
-```bash
-hdev model --list                        # options and the trade-off
-hdev model openrouter/qwen/qwen3-coder   # save it
-```
+`hdev model anthropic/claude-haiku-4-5-20251001` points pi at a Claude model,
+and `hdev` authenticates it with the subscription token rather than a metered
+API key. Verified working.
 
-`HDEV_PI_MODEL` still overrides it for one command if you need that.
-
-`pi` needs `OPENROUTER_API_KEY`. `hdev` refuses to submit without it rather
-than booting a VM that cannot work.
+**Flag this to the user rather than deciding for them.** Anthropic documents
+that token as being for CI and scripts; whether driving a third-party client
+with it fits their subscription terms is a licensing question, not a technical
+one. Say so and let them choose.
 
 ## A finished job is still a collaborator
 

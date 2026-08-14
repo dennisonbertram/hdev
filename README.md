@@ -177,25 +177,37 @@ complete. The catalog is guidance — any pi model id is accepted.
 ## Choosing the agent
 
 ```bash
-hdev submit plan.md            # Claude Code, on your subscription
-hdev submit -a pi plan.md      # pi harness, DeepSeek V4 Flash via OpenRouter
-hdev submit -a codex plan.md   # Codex
+hdev submit plan.md                # Claude Code, on your subscription
+hdev submit -a claude-pi plan.md   # Claude plans and reviews, pi writes the code
+hdev submit -a pi plan.md          # pi alone, on any model
+hdev submit -a codex plan.md       # Codex
+
+hdev agent claude-pi               # save a default
 ```
 
-| | Claude Code | pi |
-| --- | --- | --- |
-| Model | your Claude subscription | anything on OpenRouter |
-| Cost | subscription window | ~$0.14/M in, $0.28/M out on DeepSeek V4 Flash |
-| Subagents | real, enforced by `--agents` | none; delegates by invoking itself |
-| Ask a running job | safe — forks the session | refused until the job finishes |
-| Usage limits | shares your 5-hour window | none |
+| | Claude | claude-pi | pi |
+| --- | --- | --- | --- |
+| Plans and reviews | Claude | Claude | the cheap model |
+| Writes the code | Claude subagents | **pi** | pi |
+| Subagents | real, enforced | research/review only | none |
+| Ask a running job | safe, forks | safe, forks | refused until done |
+| Claude usage window | consumed | planning only | untouched |
 
-`pi` suits mechanical, well-specified work and does not consume your Claude
-window. Claude suits ambiguous work where a plausible-but-wrong answer is
-expensive. Pick pi's model with `hdev model` — see above.
+**`claude-pi`** is the frontier-plans / cheap-model-types split, running on a
+throwaway VM. Measured on a real job — three helpers with tests — it made
+**11 pi invocations and 1 subagent call**, and produced 10 of 10 passing tests
+in **two minutes**.
 
-Needs `OPENROUTER_API_KEY`; `hdev` refuses to submit without it rather than
-booting a VM that cannot work.
+### pi on your Claude subscription
+
+```bash
+hdev model anthropic/claude-haiku-4-5-20251001
+```
+
+Points pi at a Claude model authenticated with your subscription token rather
+than a metered API key. Verified working. Anthropic documents that token as
+being for CI and scripts — whether driving a third-party client with it fits
+your subscription terms is a licensing question, so check before relying on it.
 
 ## What it cost
 
