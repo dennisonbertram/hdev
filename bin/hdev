@@ -676,11 +676,30 @@ cmd_submit() {
   [ -n "$DRY" ] || say "laptop is free. check later with: hdev ps"
 }
 
+# Seconds since the agent last wrote a file, or empty when that cannot be
+# measured. Empty means "unknown" — never zero, never infinity.
+#
+# The watched set has to cover every harness or the measurement lies. Claude
+# Code writes transcripts under .claude/projects, pi under .pi/agent/sessions,
+# codex under .codex. A job running pi or codex touches none of the Claude
+# paths, so watching those alone makes a healthy job look permanently idle.
+# ~/work is the strongest signal of all: an agent doing real work changes files
+# in the checkout whatever harness it runs under.
+#
+# Heavy directories are pruned so the traversal stays cheap on a big repo.
+# The heredoc is quoted and $RHOME is substituted by sed, so nothing in the
+# remote script expands on this machine.
 job_idle() {
   local ip; ip="$(hcloud server ip "$1" 2>/dev/null || true)"
   [ -n "$ip" ] || return 0
-  printf 'n=$(find %s/.claude/projects %s/job -type f -printf "%%T@\\n" 2>/dev/null | sort -rn | head -1)\n[ -z "$n" ] || echo $(( $(date +%%s) - ${n%%%%.*} ))\n' \
-    "$RHOME" "$RHOME" | rssh "$ip" -o ConnectTimeout=6 'bash -s' 2>/dev/null
+  sed "s|@RHOME@|$RHOME|g" <<'SH' | rssh "$ip" -o ConnectTimeout=6 'bash -s' 2>/dev/null
+n=$(find @RHOME@/.claude/projects @RHOME@/.pi @RHOME@/.codex \
+         @RHOME@/job @RHOME@/work \
+         -type d \( -name node_modules -o -name .git -o -name .venv \
+                    -o -name target -o -name dist -o -name build \) -prune \
+         -o -type f -printf '%T@\n' 2>/dev/null | sort -rn | head -1)
+[ -z "$n" ] || echo $(( $(date +%s) - ${n%%.*} ))
+SH
 }
 
 job_status() {
@@ -701,6 +720,24 @@ job_status() {
     failed)                      echo failed ;;
     inactive)                    [ "$res" = success ] && echo done || echo "exited:${res:-?}" ;;
     *)                           echo starting ;;
+  esac
+}
+
+# Validate a duration argument, or die naming the flag and the bad value.
+#
+# secs() echoes an unparseable value straight back, so without this check a
+# typo reaches `[ "$age" -ge "$limit" ]` and aborts the script with a raw bash
+# "integer expression expected" instead of telling the user what was wrong.
+#
+# Call this directly, never inside $(...): die() runs `exit`, which would only
+# leave the command substitution's subshell and let the bad value through.
+secs_ok() {
+  local flag="$1" val="${2:-}" num
+  [ -n "$val" ] || die "$flag needs a duration — 30m, 4h, 2d, or bare seconds"
+  num="$val"
+  case "$val" in *[smhd]) num="${val%?}" ;; esac
+  case "$num" in
+    ''|*[!0-9]*) die "$flag: '$val' is not a duration — digits with an optional s, m, h or d suffix (30m, 4h, 2d)" ;;
   esac
 }
 
@@ -771,6 +808,27 @@ PY'" 2>/dev/null
 }
 
 # name<TAB>output_tokens<TAB>api_equiv_usd
+# human_age on an empty value evaluates `[ "" -ge 86400 ]`, which aborts the
+# script under `set -e`. age is empty whenever a server is missing from the
+# hdev=1 label query, so every display path has to go through this.
+age_str() {
+  case "${1:-}" in
+    ''|*[!0-9]*) echo "unknown age" ;;
+    *)           human_age "$1" ;;
+  esac
+}
+
+# Why a kept VM is still up, and what clears it. Saying nothing is what let
+# servers pile up unnoticed.
+keep_hint() {
+  case "$1" in
+    unreachable) echo " — SSH blocked from this IP, so it cannot be checked; 'hdev reap --max-age <dur>' removes it" ;;
+    starting)    echo " — still booting, or cloud-init failed" ;;
+    running)     echo " — 'hdev reap --idle <dur>' removes it if the agent has stopped writing" ;;
+    *)           echo "" ;;
+  esac
+}
+
 usage_row() {
   job_usage "$1" | python3 -c "
 import json,sys
@@ -863,9 +921,16 @@ cmd_cancel() {
 
 # Delete VMs whose job is no longer running, and forget them.
 cmd_reap() {
-  local maxage="" limit=0 ages
-  [ "${1:-}" != "--max-age" ] || { maxage="${2:?usage: hdev reap [--max-age 4h]}"; shift 2; }
-  [ -z "$maxage" ] || limit="$(secs "$maxage")"
+  local maxage="" limit=0 idlestr="" idlelimit=0 ages
+  # Validation runs before anything else, so a typo is caught without a
+  # Hetzner call and `hdev reap --idle 30q` is testable offline.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --max-age) secs_ok --max-age "${2:-}"; maxage="$2"; limit="$(secs "$2")";      shift 2 ;;
+      --idle)    secs_ok --idle    "${2:-}"; idlestr="$2"; idlelimit="$(secs "$2")"; shift 2 ;;
+      *)         die "usage: hdev reap [--idle <duration>] [--max-age <duration>]" ;;
+    esac
+  done
   [ -s "$JOBS" ] || { say "no jobs"; return; }
   ages="$(server_ages)"
   local keep; keep="$(mktemp)"
@@ -884,8 +949,32 @@ cmd_reap() {
         && say "deleted $job — $(human_age "$age") old, past $maxage (was: $st)"
       continue
     fi
+    # --idle deletes a job whose agent stopped writing files. It is safer than
+    # --max-age because a working agent writes continuously, but it only
+    # applies where the reading means something: unreachable cannot be
+    # measured (the SSH that would measure it is what failed), and
+    # waiting-on-limit was already kept above precisely because it writes
+    # nothing while healthy.
+    case "$st" in
+      running|starting)
+        if [ -n "$idlestr" ]; then
+          local idle; idle="$(job_idle "$job" || true)"
+          # Untrusted: this value comes off the job VM. Anything but digits is
+          # "not measurable", which never deletes.
+          case "$idle" in
+            ''|*[!0-9]*) ;;
+            *) if [ "$idle" -ge "$idlelimit" ]; then
+                 usage_row "$job" >> "$USAGE" 2>/dev/null || true
+                 hcloud server delete "$job" >/dev/null 2>&1 \
+                   && say "deleted $job — idle $(human_age "$idle"), past $idlestr (was: $st)"
+                 continue
+               fi ;;
+          esac
+        fi ;;
+    esac
     case "$st" in
       running|starting|unreachable)
+        say "keeping $job — $st, $(age_str "$age") old$(keep_hint "$st")"
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$job" "$branch" "$nwo" "$agent" "$base" "$created" >> "$keep" ;;
       gone) say "forgetting $job (already deleted)" ;;
       *)    usage_row "$job" >> "$USAGE" 2>/dev/null || true
@@ -1200,8 +1289,11 @@ hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
   hdev ask [-c] <job> "<question>"   ask the remote agent; -c to instruct it
   hdev logs [-f] <job>               raw output of the run
   hdev cancel <job> | hdev ssh <job>
-  hdev reap [--max-age 4h]           delete finished VMs; with --max-age,
-                                     runaways and untracked VMs too
+  hdev reap [--idle 1h] [--max-age 4h]
+                                     delete finished VMs. --idle also deletes a
+                                     job whose agent stopped writing files;
+                                     --max-age judges on the clock alone and
+                                     also clears untracked VMs
   hdev image [profile]               build/rebuild a profile snapshot
   hdev images                        list the profile snapshots you have
   hdev snapshot <job> <profile>      turn a finished job's VM into a profile
