@@ -226,22 +226,33 @@ check "slice spec wants a baseline"      "exact numbers it must print" "$sk"
 check "slice spec wants failing tests"   "already exist and already fail" "$sk"
 check "slice spec wants a closed file list" "closed list of files"     "$sk"
 check "slice spec wants a verbatim contract" "not described"           "$sk"
-check "slice spec respects the output limit" "16.4K maximum output"    "$sk"
+check "slice spec bounds a slice by review, not by token cap" "name every file" "$sk"
 check "review treats output as a claim"  "claim, not a result"         "$sk"
 check "review checks tests untouched"    "never edit a test"           "$sk"
-check "cerebras key is shipped"          "CEREBRAS_API_KEY"            "$(sed -n '/^ship_secrets()/,/^}/p' "$HDEV")"
+# The catalog dropped Cerebras, but a user may still pick a cerebras model id.
+# The key must reach the VM anyway, or that choice fails silently on the box.
+check "cerebras key still ships"         "CEREBRAS_API_KEY"            "$(sed -n '/^ship_secrets()/,/^}/p' "$HDEV")"
+check "openrouter key ships"             "OPENROUTER_API_KEY"          "$(sed -n '/^ship_secrets()/,/^}/p' "$HDEV")"
 # The provider choice must be the user's, explicit, and persistent.
 MD_STATE="$(mktemp -d)"
-check "model --list shows both providers" "cerebras"   "$("$HDEV" model --list 2>&1)"
-check "model --list shows openrouter"     "openrouter" "$("$HDEV" model --list 2>&1)"
-check "model --list states the trade-off" "Cerebras is fastest" "$("$HDEV" model --list 2>&1)"
-check "model --list warns on output cap"  "16.4K max output"    "$("$HDEV" model --list 2>&1)"
+mlist="$("$HDEV" model --list 2>&1)"
+check "default model is deepseek v4 flash" "openrouter/deepseek/deepseek-v4-flash" "$mlist"
+check "catalog states real prices"         '$0.14/$0.28 per M'  "$mlist"
+check "catalog states the context window"  "1048k context"      "$mlist"
+# The point of the tool is unattended work, so speed must not be the pitch.
+check "trade-off is reasoning, not speed"  "Pay for reasoning, not speed" "$mlist"
+countcheck "cerebras is off the catalog" 0 "cerebras/"          "$mlist"
+check "default matches the catalog"  "openrouter/deepseek/deepseek-v4-flash" \
+      "$(HDEV_STATE_DIR="$(mktemp -d)" "$HDEV" model 2>&1)"
 HDEV_STATE_DIR="$MD_STATE" "$HDEV" model openrouter/qwen/qwen3-coder >/dev/null 2>&1
 check "model choice persists"             "qwen3-coder" "$(HDEV_STATE_DIR="$MD_STATE" "$HDEV" model 2>&1)"
 check "saving names the provider"         "provider: openrouter" "$(HDEV_STATE_DIR="$MD_STATE" "$HDEV" model openrouter/qwen/qwen3-coder 2>&1)"
 rm -rf "$MD_STATE"
 check "skill makes setup a user decision" "Ask; do not pick silently" "$sk"
-check "skill states the provider trade-off" "OpenRouter has far more" "$sk"
+check "skill states the model trade-off"  "reasoning against price, not speed" "$sk"
+check "skill names the default model"     "openrouter/deepseek/deepseek-v4-flash" "$sk"
+# A model whose provider was never captured fails at job start, not at set time.
+check "skill checks model against credential" "hdev login status" "$sk"
 # A pi-only user must not have to type -a pi on every submit, and plain
 # `hdev login` must not abort just because there is no Claude subscription.
 AG_STATE="$(mktemp -d)"

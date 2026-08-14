@@ -1097,11 +1097,11 @@ cmd_mode() {
 
 # Curated, verified options. Prices are per million tokens at the time they
 # were checked; run `hdev model --list` again if that matters to a decision.
+# Prices and limits verified against https://openrouter.ai/api/v1/models.
 model_catalog() { cat <<'TSV'
-cerebras/zai-glm-4.7	cerebras	fastest by far; 16.4K max output, so slices must be small
-openrouter/deepseek/deepseek-v4-flash	openrouter	cheapest: $0.14/M in, $0.28/M out, 1048k context
-openrouter/qwen/qwen3-coder	openrouter	$0.30/$1.00 per M, 262k context, tuned for code
-openrouter/z-ai/glm-4.7	openrouter	$0.40/$1.75 per M, 204k context; GLM without Cerebras
+openrouter/deepseek/deepseek-v4-flash	openrouter	default: $0.14/$0.28 per M, 1048k context, 393k output
+openrouter/qwen/qwen3-coder	openrouter	$0.30/$1.00 per M, 262k context, 65k output; tuned for code
+openrouter/z-ai/glm-4.7	openrouter	$0.40/$1.75 per M, 204k context, 131k output
 openrouter/deepseek/deepseek-v4-pro	openrouter	$1.17/$2.34 per M when flash is not strong enough
 TSV
 }
@@ -1138,8 +1138,9 @@ cmd_model() {
         printf '%-40s %-11s %s\n' "$m" "$p" "$n"
       done
       echo
-      say "Cerebras is fastest; OpenRouter has far more models. Any pi model id works, not just these."
-      say "Set one with: hdev model <id>   then: hdev login pi"
+      say "DeepSeek V4 Flash is the default: cheap, and strong enough for a well-written slice."
+      say "A job runs unattended in the cloud, so a faster model buys you little. Pay for reasoning, not speed."
+      say "Any pi model id works, not just these. Set one with: hdev model <id>   then: hdev login pi"
       return ;;
   esac
   # any id is allowed — the catalog is guidance, not a whitelist
@@ -1149,7 +1150,6 @@ cmd_model() {
   mv "$CONFIG.tmp" "$CONFIG"
   say "pi model set to $1 (provider: ${1%%/*})"
   case "$1" in
-    cerebras/*) say "Cerebras: fastest. Note the 16.4K output cap — keep slices small." ;;
     openrouter/*) say "OpenRouter: widest model choice." ;;
   esac
   say "Now run 'hdev login pi' to capture the credential for ${1%%/*}."

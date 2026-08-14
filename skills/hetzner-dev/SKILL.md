@@ -93,18 +93,34 @@ Show them the real options and the trade-off, then let them choose:
 hdev model --list
 ```
 
-The trade-off in one line: **Cerebras is much faster, OpenRouter has far more
-models.** Say that, then note the constraint that actually bites — Cerebras'
-`zai-glm-4.7` caps at **16.4K output**, so a slice with a bigger diff will not
-complete and has to be split again. OpenRouter has no such cap on the cheap
-DeepSeek models and gives 1M context.
+**The default is `openrouter/deepseek/deepseek-v4-flash`, and most users should
+keep it.** It costs $0.14 per million input tokens and $0.28 per million
+output, and it gives 1,048,576 tokens of context with a 393,216-token output
+limit. That is enough for any slice you should be writing.
+
+The trade-off to explain is **reasoning against price, not speed.** A job runs
+unattended on a VM while the user does something else, so a model that answers
+in two seconds instead of twenty saves the user nothing. Do not recommend a
+model because it is fast.
+
+Move up the catalog only for a real reason:
+
+- The slice needs stronger reasoning than flash gives → `deepseek-v4-pro`,
+  about 8× the price.
+- The work is dense code in a large file → `qwen3-coder`, but check its
+  65,536-token output limit against the size of the diff.
 
 Once they pick:
 
 ```bash
-hdev model cerebras/zai-glm-4.7     # or any pi model id
-hdev login pi                       # captures the credential for that provider
+hdev model openrouter/deepseek/deepseek-v4-flash   # or any pi model id
+hdev login pi                                      # captures the credential for that provider
 ```
+
+**Check that the saved model and the captured credential agree.** `hdev model`
+prints the model and `hdev login status` shows which provider was captured. A
+model whose provider has no credential fails when the job starts, not when the
+model is set.
 
 `hdev model` saves the choice, so it is not an environment variable anyone has
 to remember. `hdev model` on its own shows what is set.
@@ -199,9 +215,11 @@ applies to every remote agent here for the same reason.
 4. **The exact contract**: type signatures, field names, check order, status
    codes, error strings — written out verbatim, not described. A gap in the
    contract becomes a gap in the code.
-5. **A size that fits the model's output limit.** `cerebras/zai-glm-4.7` has a
-   16.4K maximum output; a slice whose diff exceeds that will not complete.
-   Split it again.
+5. **A size a reviewer will actually read.** The default model allows 393,216
+   output tokens, so the model's limit is not what bounds a slice — the PR is.
+   If you cannot name every file the slice touches, it is too big. Split it.
+   Check the output limit in `hdev model --list` only when the user has chosen
+   a model with a smaller one, such as `qwen3-coder` at 65,536.
 
 Two more that are specific to running remotely:
 

@@ -188,9 +188,18 @@ hdev model <id>          # save a choice; persists, no env var to remember
 hdev login pi            # capture the credential for that provider
 ```
 
-**Cerebras is much faster; OpenRouter has far more models.** Cerebras'
-`zai-glm-4.7` caps at 16.4K output, so slices whose diff exceeds that will not
-complete. The catalog is guidance — any pi model id is accepted.
+The default is **`openrouter/deepseek/deepseek-v4-flash`**: $0.14/M in,
+$0.28/M out, 1,048,576 context, 393,216 output. Verified against OpenRouter's
+model API, not quoted from memory.
+
+**Choose on reasoning and price, not on speed.** A job runs unattended on a VM
+while you do something else, so a model that replies in two seconds instead of
+twenty saves you nothing. Move up the catalog when a slice needs more
+reasoning than flash gives, not when you want the answer sooner.
+
+The catalog is guidance — any pi model id is accepted, including providers not
+listed. Set `OPENROUTER_API_KEY` or `CEREBRAS_API_KEY` and the key travels to
+the VM even for a model the catalog never mentions.
 
 ## Choosing the agent
 
