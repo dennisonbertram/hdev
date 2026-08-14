@@ -155,19 +155,26 @@ open permissions, and that token could delete your whole project.
 `6h`) with a `!`. To clear runaways and any VM left behind by a crashed submit:
 
 ```bash
-hdev reap                  # finished jobs only; reports orphans without deleting
-hdev reap --max-age 4h     # also deletes running jobs and orphans older than 4h
+hdev reap                  # finished jobs only; names what it keeps and why
+hdev reap --idle 1h        # also deletes jobs whose agent stopped writing files
+hdev reap --max-age 4h     # also deletes on the clock alone, plus orphans
 ```
 
 Set it and forget it — a safety net, not a schedule you have to think about:
 
 ```bash
 # macOS
-echo '0 * * * * PATH=/usr/local/bin:/opt/homebrew/bin:$PATH '"$PWD"'/bin/hdev reap --max-age 6h' | crontab -
+echo '0 * * * * PATH=/usr/local/bin:/opt/homebrew/bin:$PATH '"$PWD"'/bin/hdev reap --idle 1h' | crontab -
 ```
 
-Pick a max age longer than your longest real job. `--max-age` cannot tell a
-runaway from slow honest work; it only knows the clock.
+**Prefer `--idle` over `--max-age` in cron.** A job that is really working keeps
+writing files, so idle cannot mistake slow honest work for a runaway. Age can:
+it only knows the clock. Pick an idle threshold comfortably longer than one slow
+turn.
+
+Run `--max-age` by hand for the two things idle cannot reach: an `unreachable`
+VM, whose idle time cannot be measured because SSH is what failed, and an
+untracked VM left by a crashed submit.
 
 ### Reap when a Claude Code session ends
 
@@ -196,6 +203,10 @@ them. Check the result with `jq . ~/.claude/settings.json` — a malformed
 | --- | --- | --- |
 | `SessionEnd` | `hdev reap` | Deletes the VM of every finished job. Keeps every running job |
 | `SessionStart` | report only | Names any VM that survived the last session |
+
+Set `HDEV_REAP_IDLE=1h` in the environment to make the end hook pass `--idle`
+too. It is opt-in: deleting a job that still reports as running is a bigger
+decision than a hook should make unasked.
 
 The end hook has no terminal to print to, so its output goes to
 `~/.config/hdev/last-reap.log`. Both hooks exit silently when `hdev` is not

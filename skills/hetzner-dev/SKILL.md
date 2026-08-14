@@ -453,6 +453,15 @@ Offer the user a loop that runs the whole cycle, not just a status poll:
 5. **Done, reviewed, no changes pending, and idle for a while?** Only then
    `hdev reap`. Tell the user which VMs you are deleting and that their agents
    go with them.
+6. **A job that says `running` but has not moved for a long time?** It may be
+   stuck. `hdev reap --idle <duration>` deletes a job whose agent stopped
+   writing files. Prefer it over `--max-age`: a job that is really working
+   keeps writing, so idle cannot mistake slow honest work for a runaway.
+   Confirm with the user before using it on a job they may still want.
+7. **A job showing `unreachable`?** Its idle time cannot be measured, because
+   the SSH that would measure it is what failed. Usually the user changed
+   network — the firewall only allows SSH from the IP held at submit time.
+   Say that, and offer `hdev reap --max-age <duration>` as the way to clear it.
 
 **What "idle enough" means.** Idle counts from the last interaction, so asking a
 question resets it. Do not reap a job the user is still talking to. Twenty
@@ -507,9 +516,21 @@ hook deleted.
 The hook exits immediately, and prints nothing, when `hdev` is absent or no job
 is tracked. Measured at 0.32 s with no jobs.
 
+Set `HDEV_REAP_IDLE=1h` in the environment to make the end hook pass `--idle`
+too, so a stuck job is cleared as well as a finished one. It is opt-in by
+design: deleting a job that still reports as running is a bigger decision than
+a hook should make unasked. Offer it; do not set it for the user.
+
 **A hook is a backstop, not the plan.** It runs when the user closes the
 session, which can be hours after a job finished. Reap in the watch loop as
 soon as the work is reviewed. Let the hook catch only what you missed.
+
+**Powering a VM off would not help.** Hetzner bills the server object until it
+is deleted, so a VM cannot save money by shutting itself down — and a VM that
+shuts down goes `unreachable`, which plain reap keeps. Deletion has to come
+from the user's machine, because a Hetzner token is project-scoped and one on a
+job VM could delete every other job. If the user asks for self-shutdown, say
+this plainly rather than building it.
 
 ## Interval guidance
 
