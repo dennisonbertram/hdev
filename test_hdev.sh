@@ -268,6 +268,12 @@ ocp="$(orchestrator claude-pi)"
 check "claude-pi delegates code to pi"  "pi -p --model"          "$ocp"
 check "claude-pi reserves subagents"    "never for writing code" "$ocp"
 # Code shipped without docs once already; assert every harness is documented.
+# A hardcoded check count in the docs went stale twice. Do not state one.
+for f in README.md SETUP.md; do
+  if grep -qE '\b[0-9]+ offline checks' "$(dirname "$HDEV")/../$f"
+  then echo "FAIL $f states a check count that will go stale"; fail=1
+  else echo "ok   $f states no stale check count"; fi
+done
 for h in claude-pi pi codex; do
   check "skill documents $h"  "$h" "$sk"
   check "readme documents $h" "$h" "$(cat "$(dirname "$HDEV")/../README.md")"

@@ -42,7 +42,7 @@ ln -sfn "$PWD/skills/hetzner-dev" ~/.claude/skills/hetzner-dev
 ln -sfn "$PWD/skills/hetzner-dev" ~/.codex/skills/hetzner-dev
 ```
 
-Run `./test_hdev.sh` for 63 offline checks that make no Hetzner calls.
+Run `./test_hdev.sh` for the offline checks that make no Hetzner calls.
 
 ## Credentials
 

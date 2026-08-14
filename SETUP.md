@@ -46,7 +46,7 @@ which puts the token in every process's environment.
 ```bash
 git clone https://github.com/dennisonbertram/hdev ~/develop/hdev
 mkdir -p ~/.local/bin && ln -sfn ~/develop/hdev/bin/hdev ~/.local/bin/hdev
-~/develop/hdev/test_hdev.sh           # 192 offline checks, no Hetzner calls
+~/develop/hdev/test_hdev.sh           # offline checks, no Hetzner calls
 ```
 
 That works if `~/.local/bin` is already on your PATH — check with
