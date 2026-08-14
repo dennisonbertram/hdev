@@ -249,6 +249,23 @@ check "login captures pi credentials"  "PIAUTH"             "$whole"
 check "only one provider is shipped"   "that provider only" "$whole"
 check "pi auth is shipped to the box"  ".pi/agent/auth.json" "$(sed -n '/^ship_secrets()/,/^}/p' "$HDEV")"
 
+# A new user has no snapshot, so the cold path is the FIRST thing they hit.
+# It referenced an unassigned $SNAPSHOT and crashed under `set -u`.
+bootsrc="$(sed -n '/^boot()/,/^}$/p' "$HDEV")"
+countcheck "cold path uses no unassigned vars" 0 'SNAPSHOT' "$bootsrc"
+check "cold path names the profile"    "no snapshot for profile" "$bootsrc"
+check "cold path says it still works"  "provisioning from scratch" "$bootsrc"
+# Every variable the script reads must be assigned somewhere.
+for v in $(grep -oE '\$\{?[A-Z][A-Z0-9_]{2,}' "$HDEV" | tr -d '${' | sort -u); do
+  case "$v" in HOME|PATH|PWD|BASH_SOURCE|PIPESTATUS|IFS|OLDPWD|SHELL|USER|TERM|LANG|LC_ALL|COPYFILE_DISABLE|GH_TOKEN|OPENAI_API_KEY|OPENROUTER_API_KEY|ANTHROPIC_API_KEY|ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_MODEL|CLAUDE_CODE_OAUTH_TOKEN|HCLOUD_TOKEN|HDEV_*|PLAYWRIGHT_BROWSERS_PATH|NODE_PATH|JOB_IDLE|MD|JSON|YAML|BASH|PY) continue ;; esac
+  # injected into the remote job by systemd-run --setenv, so they are
+  # deliberately not assigned on this side
+  case "$v" in BRANCH|TITLE|BASE_REF|AGENT_CMD|NWO|REPO_URL|OUT|LIMIT_RETRIES|PI_PROVIDER) continue ;; esac
+  case "$v" in HDEV*) continue ;; esac
+  grep -qE "^ *(local +)?$v=|^ *$v=" "$HDEV" || { echo "FAIL \$$v is read but never assigned"; fail=1; }
+done
+echo "ok   every uppercase variable read is also assigned"
+
 # Firewall rules must be valid JSON built by a real function, not by a
 # multi-line process substitution (bash expands that once per line).
 eval "$(sed -n '/^fw_rules()/p' "$HDEV")"

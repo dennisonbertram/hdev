@@ -99,16 +99,22 @@ Claude Code it takes precedence over the subscription token. `hdev` drops it
 from the job environment when a subscription token exists, but the clean thing
 is not to have it set.
 
-## 5. Build the base image
+## 5. Build the base image (optional, but do it)
+
+**You do not need a snapshot to start.** With none, `hdev submit` boots stock
+`ubuntu-24.04` and cloud-init installs the whole toolchain — node, gh, Claude
+Code, Codex, pi — before the job runs. It works; it just costs about 3 minutes
+per job instead of 40 seconds, every time. Verified on a fresh boot.
+
+Building the snapshot once removes that:
 
 ```bash
 hdev image        # about 2 minutes, once
 hdev images       # confirm it exists
 ```
 
-This boots a throwaway VM, installs node, gh, ripgrep, build-essential, Claude
-Code and Codex, snapshots it, and deletes the VM. Without it every job installs
-that toolchain at boot — roughly 3 minutes per job instead of 40 seconds.
+This boots a throwaway VM, installs the toolchain, snapshots it, and deletes the
+VM. Every later job starts from the snapshot.
 
 ## 6. Run something
 

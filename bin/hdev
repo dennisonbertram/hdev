@@ -362,7 +362,7 @@ boot() {
   if [ -n "$force_base" ] || [ -z "$img" ]; then
     img="$BASE_IMAGE"
     [ -n "$force_base" ] \
-      || say "no '$SNAPSHOT' snapshot — booting $BASE_IMAGE (~3 min; 'hdev image' fixes this)"
+      || say "no snapshot for profile '$PROFILE' — booting $BASE_IMAGE and provisioning from scratch (~3 min). 'hdev image $PROFILE' builds one so later jobs start in ~40s."
   fi
   # Hetzner prices server types it will not actually sell you: a whole
   # generation can be "supported" everywhere and available nowhere. Say which
@@ -706,7 +706,33 @@ job_usage() {
   rssh "$ip" -n "su - $RUSER -c 'npx -y ccusage@latest blocks --active --json 2>/dev/null'" 2>/dev/null
 }
 
-# name<TAB>output_tokens<TAB>api_equiv_usd, or nothing if the box has no session yet
+# Did this job actually delegate, and did the delegates run on the cheap model?
+# Subagent transcripts live in a subagents/ subdirectory, so the glob must
+# recurse — looking only at the top-level file reports 0% haiku every time.
+job_delegation() {
+  local ip; ip="$(hcloud server ip "$1" 2>/dev/null || true)"
+  [ -n "$ip" ] || return 0
+  rssh "$ip" -n -o ConnectTimeout=8 "su - $RUSER -c 'python3 - <<PY
+import json,glob,collections
+tot=collections.defaultdict(int); dele=0
+for f in glob.glob(\"$RHOME/.claude/projects/**/*.jsonl\", recursive=True):
+    for line in open(f, errors=\"ignore\"):
+        try: r=json.loads(line)
+        except Exception: continue
+        m=(r.get(\"message\") or {})
+        for c in (m.get(\"content\") or []):
+            if isinstance(c,dict) and c.get(\"type\")==\"tool_use\" and c.get(\"name\") in (\"Agent\",\"Task\"):
+                dele+=1
+        u=m.get(\"usage\")
+        if u:
+            k=\"cheap\" if \"haiku\" in str(m.get(\"model\",\"\")) else \"main\"
+            tot[k]+=u.get(\"output_tokens\",0)
+t=sum(tot.values())
+print(\"%d %d\" % (dele, (tot[\"cheap\"]*100//t) if t else 0))
+PY'" 2>/dev/null
+}
+
+# name<TAB>output_tokens<TAB>api_equiv_usd
 usage_row() {
   job_usage "$1" | python3 -c "
 import json,sys
@@ -716,7 +742,7 @@ except Exception:
     sys.exit(0)
 out = sum(b.get('tokenCounts',{}).get('outputTokens',0) for b in blocks)
 usd = sum(b.get('costUSD',0) or 0 for b in blocks)
-if out or usd: print('%s\t%d\t%.4f' % ('$1', out, usd))
+if out or usd: print('%s\\t%d\\t%.4f' % ('$1', out, usd))
 " 2>/dev/null
 }
 
