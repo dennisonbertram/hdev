@@ -127,24 +127,40 @@ wrote. Reap last, once the PR is reviewed and nothing is outstanding.
 `hdev ps` marks any VM past `HDEV_MAX_AGE` (default `6h`) with a `!`. Put
 `hdev reap --max-age 6h` in cron as a safety net — see [SETUP.md](SETUP.md).
 
-## Making the orchestrator actually delegate
+## Delegating to cheap agents
 
-Measured, not assumed: slicing four small helpers into separate jobs cost **1.5x
-more** cache-reads per item than one brief, because each slice repays the cost of
-reading the repo. Slice for parallelism, independent review, and to stop one
-piece bloating a shared context — not on principle.
+The remote orchestrator decides; its subagents do the work, on a cheaper model.
+Every job ships with this configured:
 
-The remote agent is told to delegate to `implementer`, `tester` and `reviewer`.
-It does not always listen. One measured job loaded the skill, referenced it 95
-times, and still made zero delegations — burning **6,311,012 cache-read tokens
-against 21,529 output tokens** because every turn re-read its own 578 KB context.
+| role | model | tools |
+| --- | --- | --- |
+| `implementer` | haiku | read, search, edit, write, bash |
+| `tester` | haiku | read, search, edit, bash |
+| `researcher` | haiku | read, search — read-only |
+| `reviewer` | sonnet | read, search, bash |
+
+`HDEV_WORKER_MODEL` and `HDEV_REVIEWER_MODEL` override the models.
+
+**`hdev ps` shows whether it actually happened** — the `DELEG` column is
+delegations made and the share of output tokens that ran on the cheap model:
+
+```
+JOB                 STATUS   AGE   IDLE   DELEG
+hdev-epic1-...-1    done     14m   3m     6/29%
+hdev-epic2-...-1    done     11m   2m     0/0%
+```
+
+`0/0%` means the orchestrator did everything itself on the expensive model.
+Measured across four real jobs the counts were 6, 3, 1 and 0 — it is not
+reliable on its own, so check.
 
 ```bash
 HDEV_STRICT=1 hdev submit -b epic1 plan.md
 ```
 
-Strict mode removes `Edit`, `Write` and `NotebookEdit` from the orchestrator, so
-it cannot write code itself and has to delegate. Worth it on anything large.
+Strict mode removes `Edit`, `Write` and `NotebookEdit` from the orchestrator so
+it has to delegate. A one-file change legitimately shows `0/0%`; judge against
+the size of the job.
 
 ## Choosing the agent
 

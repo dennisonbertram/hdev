@@ -781,7 +781,7 @@ cmd_ps() {
   [ -s "$JOBS" ] || { echo "no jobs yet"; return; }
   local ages limit old=0
   ages="$(server_ages)"; limit="$(secs "$MAXAGE")"
-  printf '%-38s %-11s %-6s %-6s %s\n' JOB STATUS AGE IDLE BRANCH
+  printf '%-38s %-11s %-6s %-6s %-9s %s\n' JOB STATUS AGE IDLE DELEG BRANCH
   # ponytail: one SSH per job, sequential. Fine to a few dozen jobs.
   while IFS=$'\t' read -r job branch _nwo _agent _base _created; do
     local age agestr
@@ -792,7 +792,7 @@ cmd_ps() {
     else
       agestr="-"
     fi
-    local stat idlestr sec
+    local stat idlestr sec d
     stat="$(job_status "$job")"
     idlestr="-"
     case "$stat" in
@@ -800,7 +800,13 @@ cmd_ps() {
       *) sec="$(job_idle "$job" || true)"
          [ -z "$sec" ] || idlestr="$(human_age "$sec")" ;;
     esac
-    printf '%-38s %-11s %-6s %-6s %s\n' "$job" "$stat" "$agestr" "$idlestr" "$branch"
+    local dele="-"
+    case "$stat" in
+      gone|unreachable) ;;
+      *) d="$(job_delegation "$job" || true)"
+         [ -z "$d" ] || dele="$(set -- $d; echo "$1/${2}%")" ;;
+    esac
+    printf '%-38s %-11s %-6s %-6s %-9s %s\n' "$job" "$stat" "$agestr" "$idlestr" "$dele" "$branch"
   done < "$JOBS"
   [ "$old" -eq 0 ] || say "$old VM(s) older than $MAXAGE (marked !) — 'hdev reap --max-age $MAXAGE' deletes them"
 }
@@ -1077,7 +1083,7 @@ hdev — hand a plan to an agent on a Hetzner VM, then close your laptop.
   hdev submit [-a claude|codex|pi] [-p profile] [-e .env.local] [-t type]
               [-b prefix] [-1] <plan.md>
   hdev submit -m "<one task>"        skip the plan file
-  hdev ps                            status of every job
+  hdev ps                            status, age, idle, delegations/cheap%
   hdev usage                         tokens burned, per job and here
   hdev status <job>                  the orchestrator's own progress notes
   hdev ask [-c] <job> "<question>"   ask the remote agent; -c to instruct it

@@ -410,79 +410,52 @@ Two things that are already safe: the files travel over SSH after boot, never
 through cloud-init; and `hdev snapshot` scrubs the whole work tree before
 capturing, so a sent `.env` cannot end up baked into a profile image.
 
-## Keeping jobs cheap
+## Make sure the job delegates to cheap agents
 
-Two things drive cost, and only one of them is about delegation.
+The point of the remote orchestrator is that it **decides** and its subagents
+**work**, on a cheaper model. `hdev` ships that configuration with every job:
 
-**0. Slicing is bounded by your Hetzner server limit.** Each slice is a VM, and
-projects have a per-project cap — this one is 5. `hdev submit` warns before
-booting when the count would exceed what is free, but the cap itself is
-Hetzner's. Check `hcloud server list` before submitting a large plan, `hdev reap`
-to free space, or ask Hetzner to raise the limit. A ten-slice plan against a
-five-server project boots five VMs and then fails.
+| role | model | tools |
+| --- | --- | --- |
+| `implementer` | haiku | read, search, edit, write, bash |
+| `tester` | haiku | read, search, edit, bash |
+| `researcher` | haiku | read, search — **read-only** |
+| `reviewer` | sonnet | read, search, bash |
 
-**1. Slice by shippable unit, not by issue count.** This was measured, and the
-obvious answer was wrong. Four small helpers in one brief versus three of the
-same helpers as separate slices:
+Override with `HDEV_WORKER_MODEL` and `HDEV_REVIEWER_MODEL`. You do not need to
+tell the agent to use `efficient-fable` or to delegate — the skill and the
+subagents are already there.
 
-| | items | cache-reads | per item | turns/item |
-| --- | --- | --- | --- | --- |
-| one brief | 4 | 1,543,023 | 385,755 | 14.0 |
-| separate slices | 3 | 1,745,459 | 581,819 | 25.7 |
+### Check it actually happened
 
-Slicing cost **1.5x more** per item. Every slice repays a fixed startup — clone,
-read the repo, load the skill, learn the conventions — and for small items that
-overhead beats the context saving.
+`hdev ps` has a **DELEG** column: delegations made, and the share of output
+tokens that ran on the cheap model.
 
-So slice when a piece is **big enough to bloat a shared context on its own**, or
-when you want it reviewed and merged independently, or when wall-clock matters
-because slices run in parallel. Batch small related items into one job. A ten
-issue epic is not automatically ten slices; three coherent areas may be three.
-
-The failure the slicing advice exists to prevent is the other extreme: one brief
-with ten issues that ran 169 turns against a 1 MB context for 6.3M cache-reads.
-Judge by how big each piece's context will get, not by counting issues.
-
-**Why cheap subagents do not make brief size irrelevant.** They work — measured
-on a real job, haiku carried **29% of output tokens**. But it carried only
-**13% of cache-reads**, and cache-reads are two orders of magnitude the larger
-number. The orchestrator's own context accounted for **86%**, because every
-delegation's result comes back into that context and every later turn re-reads
-it. Cheap workers shift who does the writing; they do not stop the
-orchestrator's conversation growing. Cost-weighted, with cheap subagents active
-throughout, slicing four small items still cost **1.47x more per item**
-($0.248 vs $0.169). Both levers are real, and neither replaces the other.
-
-**2. The workers are already cheap; leave them that way.** `hdev` defines four
-subagents and sets their models: `implementer`, `tester` and `researcher` run on
-haiku, `reviewer` on sonnet, because judgement is worth paying for and reading
-files is not. Override with `HDEV_WORKER_MODEL` and `HDEV_REVIEWER_MODEL`. Tools
-are scoped per role too — `researcher` is read-only and cannot modify anything.
-
-You do not need to tell the agent to use `efficient-fable` or to delegate; the
-job already ships with the skill and the cheap subagents configured. What you
-control is the size of the brief.
-
-### When a job still feels expensive
-
-Measure before theorising:
-
-```bash
-hdev ssh <job>
-f=$(ls -t ~/.claude/projects/*/*.jsonl | head -1)
-grep -c '"role":"assistant"' "$f"                       # turns
-grep -o '"name":"[A-Za-z]*"' "$f" | sort | uniq -c | sort -rn | head
+```
+JOB                    STATUS   AGE   IDLE   DELEG
+hdev-epic1-...-1       done     14m   3m     6/29%
+hdev-epic2-...-1       done     11m   2m     0/0%
 ```
 
-Many turns and no `Agent` calls means the orchestrator did everything itself.
-The lever is a smaller brief first. If that is not enough:
+`6/29%` is healthy: it delegated six times and 29% of the output came from
+haiku. **`0/0%` means the orchestrator did everything itself on the expensive
+model** — that is the failure to catch.
+
+Measured across four real jobs, delegation counts were 6, 3, 1 and 0. It is not
+reliable on its own, so check rather than assume.
+
+### When a job shows 0 delegations
 
 ```bash
 HDEV_STRICT=1 hdev submit -b epic1 plan.md
 ```
 
-Strict mode removes `Edit`, `Write` and `NotebookEdit` from the orchestrator so
-it cannot write code itself. Reach for it after slicing, not instead of it.
+Strict mode removes `Edit`, `Write` and `NotebookEdit` from the orchestrator, so
+it cannot do the work itself and has to hand it to a subagent. Reach for it on
+anything large, and any time the user says usage is draining.
+
+A one-file change legitimately shows `0/0%` — delegating a one-line edit costs
+more than doing it. Judge against the size of the job.
 
 ## Seeing what the jobs cost
 
