@@ -10,6 +10,8 @@ opened a PR.
 
 One slice of a plan → one VM → one branch → one PR.
 
+[![skills.sh](https://skills.sh/b/dennisonbertram/hdev)](https://skills.sh/dennisonbertram/hdev)
+
 **[dennisonbertram.github.io/hdev](https://dennisonbertram.github.io/hdev)** ·
 [Setup guide](SETUP.md) · MIT
 
