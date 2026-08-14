@@ -258,6 +258,9 @@ for a in claude codex pi; do
 done
 check "resume is passed to the job"    "setenv=RESUME_CMD" "$(cat "$HDEV")"
 check "boot waits for the right harness" "WAIT_FOR" "$(cat "$HDEV")"
+# claude-pi is a strategy, not a binary — waiting for `command -v claude-pi`
+# stranded a VM that never became reachable.
+check "readiness probe uses a real binary" 'WAIT_FOR="${agent%%-*}"' "$(cat "$HDEV")"
 # claude-pi: frontier model plans and reviews, pi writes the code.
 check "claude-pi runs a claude command" "cmd=claude" "$("$HDEV" submit -a claude-pi -m t 2>&1)"
 check "claude-pi gets the subagents"    "agents.json" "$("$HDEV" submit -a claude-pi -m t 2>&1)"

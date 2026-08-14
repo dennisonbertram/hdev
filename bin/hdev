@@ -634,7 +634,7 @@ cmd_submit() {
       continue
     fi
 
-    WAIT_FOR="$agent" boot "$job"
+    WAIT_FOR="${agent%%-*}" boot "$job"
     prepare_box "$IP"
     AGENT_FOR_SECRETS="$agent" ship_secrets "$IP"
     ship_skills "$IP"
