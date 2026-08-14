@@ -4,13 +4,13 @@
 <meta name="description" content="Hand a coding task to an agent on a throwaway Hetzner VM. Close your laptop. It comes back as a pull request.">
 <meta property="og:title" content="hdev">
 <meta property="og:description" content="Hand a coding task to an agent on a throwaway Hetzner VM. Close your laptop. It comes back as a pull request.">
-<meta property="og:image" content="https://dennisonbertram.github.io/hdev/banner.png">
+<meta property="og:image" content="https://dennisonbertram.github.io/hdev/banner.jpg">
 <meta property="og:url" content="https://dennisonbertram.github.io/hdev/">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="hdev">
 <meta name="twitter:description" content="Hand a coding task to an agent on a throwaway Hetzner VM. Close your laptop. It comes back as a pull request.">
-<meta name="twitter:image" content="https://dennisonbertram.github.io/hdev/banner.png">
+<meta name="twitter:image" content="https://dennisonbertram.github.io/hdev/banner.jpg">
 <style>
   :root {
     --ground: #F2F4F3; --surface: #FFFFFF; --sunk: #E7EBE9;
@@ -45,9 +45,13 @@
     padding: clamp(40px, 8vw, 88px) clamp(20px, 5vw, 40px) 88px;
     display: flex; flex-direction: column; gap: clamp(36px, 6vw, 56px);
   }
-  h1 {
-    font-family: var(--mono); font-size: clamp(40px, 9vw, 64px);
-    line-height: 1; letter-spacing: -.03em; margin: 0 0 14px;
+  .hero {
+    display: block; width: 100%; height: auto; border-radius: 10px;
+    margin: 0 0 22px; border: 1px solid var(--rule-soft);
+  }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
   }
   .lede { font-size: clamp(17px, 2.4vw, 20px); color: var(--muted); margin: 0; max-width: 54ch; }
   .lede strong { color: var(--ink); font-weight: 600; }
@@ -89,7 +93,9 @@
 <div class="page">
 
   <header>
-    <h1>hdev</h1>
+    <img class="hero" src="banner.jpg" width="2688" height="1520"
+         alt="hdev — coding agents on throwaway machines. A chambered nautilus drawn in fine rust-orange engraving, with line-streams braiding out of its aperture.">
+    <h1 class="sr-only">hdev</h1>
     <p class="lede">
       Hand a coding task to an agent on a <strong>throwaway Hetzner VM</strong>.
       Close your laptop. It comes back as a pull request.

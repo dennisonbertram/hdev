@@ -1,4 +1,4 @@
-<img src="docs/banner.png" alt="hdev — coding agents on throwaway machines" width="100%">
+<img src="docs/banner.jpg" alt="hdev — coding agents on throwaway machines" width="100%">
 
 # hdev
 
